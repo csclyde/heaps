@@ -422,7 +422,7 @@ class Pad {
 	}
 
 	static function onEvent( e : Event ){
-		var p = pads.get( e.controller );
+		var p = pads.get( e.controller ) ?? pads.get(0);
 		switch( e.type ){
 			case GControllerAdded:
 				if( initDone )
