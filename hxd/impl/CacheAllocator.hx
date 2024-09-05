@@ -40,6 +40,10 @@ private class Cache<T> {
 
 class CacheAllocator extends Allocator {
 
+	public function new() {
+		super();
+	}
+
 	public var currentFrame = -1;
 	var buffers = new Map<Int,Cache<h3d.Buffer>>();
 	var indexBuffers = new Map<Int,Cache<h3d.Indexes>>();
