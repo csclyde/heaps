@@ -79,8 +79,17 @@ class TransformCollider extends Collider {
 	}
 
 	public function dimension() {
-		throw "Not implemented";
-		return 0.0;
+		var scale = mat.getScale();
+		var scaleMax = Math.max(scale.x, Math.max(scale.y, scale.z));
+		return collider.dimension() * scaleMax;
+	}
+
+	public function closestPoint(p : Point) {
+		var localp = p.clone();
+		localp.transform(invMat);
+		var c = collider.closestPoint(localp);
+		c.transform(mat);
+		return c;
 	}
 
 	#if !macro

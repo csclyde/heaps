@@ -5,6 +5,7 @@ enum abstract BufferFlags(Int) {
 	public var Static = 1;
 	public var UniformDynamic = 2;
 	public var UniformReadWrite = 3;
+	public var Uniform = 4;
 	public inline function toInt() : Int {
 		return this;
 	}
@@ -17,18 +18,36 @@ class Allocator {
 
 	// GPU
 
+	function toBufferFlags(flags : BufferFlags) : Array<h3d.Buffer.BufferFlag> {
+		return switch( flags ) {
+		case Static: null;
+		case Dynamic: [Dynamic];
+		case UniformDynamic: [UniformBuffer,Dynamic];
+		case UniformReadWrite: [UniformBuffer, ReadWriteBuffer];
+		case Uniform: [UniformBuffer];
+		}
+	}
+
+	function fromBufferFlags(flags : haxe.EnumFlags<h3d.Buffer.BufferFlag>) : BufferFlags {
+		if ( flags.toInt() == 0 )
+			return Static;
+		if ( flags == Dynamic )
+			return Dynamic;
+		if ( flags == haxe.EnumFlags.ofInt((1 << h3d.Buffer.BufferFlag.UniformBuffer.getIndex()) | (1 << h3d.Buffer.BufferFlag.Dynamic.getIndex())) )
+			return UniformDynamic;
+		if ( flags == haxe.EnumFlags.ofInt((1 << h3d.Buffer.BufferFlag.UniformBuffer.getIndex()) | (1 << h3d.Buffer.BufferFlag.ReadWriteBuffer.getIndex())) )
+			return UniformReadWrite;
+		if ( flags == UniformBuffer )
+			return Uniform;
+		return Dynamic;
+	}
+
 	public function allocBuffer( vertices : Int, format, flags : BufferFlags = Dynamic ) : h3d.Buffer {
-		return new h3d.Buffer(vertices, format,
-			switch( flags ) {
-			case Static: null;
-			case Dynamic: [Dynamic];
-			case UniformDynamic: [UniformBuffer,Dynamic];
-			case UniformReadWrite: [UniformBuffer, ReadWriteBuffer];
-			});
+		return new h3d.Buffer(vertices, format, toBufferFlags(flags));
 	}
 
 	public function ofFloats( v : hxd.FloatBuffer, format : hxd.BufferFormat, flags : BufferFlags = Dynamic ) {
-		var nvert = Std.int(v.length / format.stride);
+		var nvert = Math.ceil(v.length / format.stride);
 		return ofSubFloats(v, nvert, format, flags);
 	}
 
@@ -42,8 +61,8 @@ class Allocator {
 		b.dispose();
 	}
 
-	public function allocIndexBuffer( count : Int ) {
-		return new h3d.Indexes(count);
+	public function allocIndexBuffer( count : Int, is32 : Bool = false ) {
+		return new h3d.Indexes(count, is32);
 	}
 
 	public function ofIndexes( ib: hxd.IndexBuffer, length = -1) {

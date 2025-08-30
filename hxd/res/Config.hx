@@ -26,8 +26,9 @@ class Config {
 		"atlas" => "hxd.res.Atlas",
 		"grd" => "hxd.res.Gradients",
 		#if hide
-		"prefab,fx,fx2d,l3d" => "hxd.res.Prefab",
-		"world" => "hxd.res.World"
+		"prefab,fx,fx2d,l3d,shgraph" => "hxd.res.Prefab",
+		"world" => "hxd.res.World",
+		"animgraph" => "hxd.res.AnimGraph",
 		#end
 	];
 
@@ -65,7 +66,7 @@ class Config {
 		"ogg" => "wav",
 		"mp3" => "wav",
 		"l3d" => "bake",
-		"css" => "less",
+		"css" => "less,css.map",
 	];
 
 	public static function addPairedExtension( main, shadow) {

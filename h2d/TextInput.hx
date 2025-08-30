@@ -367,15 +367,25 @@ class TextInput extends Text {
 			lines.push( { line: line, startIndex: currIndex } );
 			var prevIndex = currIndex;
 			currIndex += line.length;
-			if( cursorIndex > prevIndex && cursorIndex < currIndex ) 
+			if( cursorIndex >= prevIndex && cursorIndex < currIndex )
 				cursorLineIndex = currLineIndex;
 			currLineIndex++;
 		}
 		if (cursorLineIndex == -1)
 			return;
-		var destinationIndex = hxd.Math.iclamp(cursorLineIndex + yDiff, 0, lines.length);
+		var destinationIndex = hxd.Math.iclamp(cursorLineIndex + yDiff, -1, lines.length);
 		if (destinationIndex == cursorLineIndex)
 			return;
+		// We're moving down from the last line, move to the end of the line
+		if( destinationIndex == lines.length) {
+			cursorIndex = text.length;
+			return;
+		}
+		// We're moving up from the first line, snap to beginning
+		if( destinationIndex == -1 ) {
+			cursorIndex = 0;
+			return;
+		}
 		var current = lines[cursorLineIndex];
 		var xOffset = 0.;
 		var prevCC: Null<Int> = null;
@@ -391,7 +401,7 @@ class TextInput extends Text {
 		var currOffset = 0.;
 		prevCC = null;
 		for( cI in 0...destination.line.length ) {
-			var cc = destination.line.charCodeAt(cI);
+			var cc = StringTools.fastCodeAt(destination.line, cI);
 			var c = font.getChar(cc);
 			var newCurrOffset = currOffset + c.width + c.getKerningOffset(prevCC) + letterSpacing;
 			if( newCurrOffset > xOffset ) {
@@ -404,6 +414,10 @@ class TextInput extends Text {
 			prevCC = cc;
 		}
 		cursorIndex = destination.startIndex + destination.line.length;
+		// The last character in this line may be the \n, check for this and move back by one.
+		// we can't just assume this because the last line typically won't end with a newline.
+		if( destination.line.charAt(destination.line.length-1) == "\n")
+			cursorIndex--;
 	}
 
 	function setState(h:TextHistoryElement) {
@@ -451,8 +465,8 @@ class TextInput extends Text {
 		var currIndex = 0;
 		for( i in 0...lines.length ) {
 			var newCurrIndex = currIndex + lines[i].length;
-			if( cursorIndex < newCurrIndex ) 
-				return { value: lines[i], startIndex: currIndex };		
+			if( cursorIndex < newCurrIndex )
+				return { value: lines[i], startIndex: currIndex };
 			currIndex = newCurrIndex;
 		}
 		return { value: '', startIndex: -1 };

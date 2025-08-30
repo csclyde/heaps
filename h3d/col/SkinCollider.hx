@@ -95,6 +95,11 @@ class SkinCollider extends Collider {
 		}
 	}
 
+	public function closestPoint( p : h3d.col.Point ) {
+		throw "Not implemented";
+		return new h3d.col.Point();
+	}
+
 	#if !macro
 	public function makeDebugObj() : h3d.scene.Object {
 		return new SkinColliderDebugObj(this);
@@ -149,7 +154,7 @@ class SkinColliderDebugObj extends h3d.scene.Object {
 				var m = skin.currentPalette[j.bindIndex];
 				b.setTransform(m);
 			} else
-				b.setTransform(skin.currentAbsPose[j.index]);
+				b.setTransform(skin.jointsData[j.index].currentRelPos);
 		}
 	}
 

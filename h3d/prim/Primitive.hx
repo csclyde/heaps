@@ -17,8 +17,13 @@ class Primitive {
 	public var indexes : Indexes;
 
 	/**
+		Allow user to force a specific lod index. If set to -1, forced lod will be ignored.
+	**/
+	public var forcedLod : Int = -1;
+
+	/**
 		Current amount of references to this Primitive.
-		Use `incref` and `decref` methods to affect this value. If it reaches 0, it will be atuomatically disposed.
+		Use `incref` and `decref` methods to affect this value. If it reaches 0, it will be automatically disposed.
 	**/
 	public var refCount(default, null) : Int = 0;
 
@@ -83,14 +88,23 @@ class Primitive {
 	/**
 		Select the specified sub material before drawin. Used for internal usage.
 	**/
-	public function selectMaterial( material : Int ) {
+	public function selectMaterial( material : Int, lod : Int ) {
 	}
 
 	/**
 		Returns the number and offset of indexes for the specified material
 	**/
-	public function getMaterialIndexes( material : Int ) : { count : Int, start : Int } {
-		return { start : 0, count : indexes == null ? triCount() * 3 : indexes.count };
+	public function getMaterialIndexes( material : Int, lod : Int = 0 ) : { count : Int, start : Int } {
+		if ( lod != 0 ) return { start : 0, count : 0 };
+		return { start : getMaterialIndexStart(material, lod), count : getMaterialIndexCount(material, lod) };
+	}
+
+	public function getMaterialIndexStart( material : Int, lod : Int = 0 ) : Int {
+		return 0;
+	}
+
+	public function getMaterialIndexCount( material : Int, lod : Int = 0 ) : Int {
+		return indexes == null ? triCount() * 3 : indexes.count;
 	}
 
 	@:noCompletion public function buildNormalsDisplay() : Primitive {
@@ -128,6 +142,17 @@ class Primitive {
 	**/
 	public function toString() {
 		return Type.getClassName(Type.getClass(this)).split(".").pop();
+	}
+
+	/**
+	 	Return the LOD count.
+	**/
+	public function lodCount() {
+		return 1;
+	}
+
+	public function screenRatioToLod ( screenRatio : Float ) : Int {
+		return 0;
 	}
 
 }

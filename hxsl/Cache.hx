@@ -55,11 +55,6 @@ class SearchMap {
 
 class Cache {
 
-	#if shader_debug_dump
-	public static var DEBUG_IDS = false;
-	public static var TRACE = true;
-	#end
-
 	var linkCache : SearchMap;
 	var linkShaders : Map<String, Shader>;
 	var batchShaders : Map<RuntimeShader, { shader : SharedShader, params : RuntimeShader.AllocParam, size : Int }>;
@@ -248,15 +243,24 @@ class Cache {
 
 		#if shader_debug_dump
 		var shaderId = @:privateAccess RuntimeShader.UID;
+		#if ( js && !sys && !hxnodejs )
+		if( shaderId == 0 ) js.Syntax.code("window.shaders_debug_dump = [];");
+		js.Syntax.code("window.shaders_debug_dump[{0}] = '';", shaderId);
+		var dbg: { writeString: String->Void, close:Void->Void } = {
+			writeString: (str: String) -> { js.Syntax.code("window.shaders_debug_dump[{0}] += {1}", shaderId, str); },
+			close: () -> {}
+		};
+		#else
 		if( shaderId == 0 ) try sys.FileSystem.createDirectory("shaders") catch( e : Dynamic ) {};
 		var dbg = sys.io.File.write("shaders/"+shaderId+"_dump.c");
+		#end
 		var oldTrace = haxe.Log.trace;
 		haxe.Log.trace = function(msg,?pos) dbg.writeString(haxe.Log.formatOutput(msg,pos)+"\n");
 		if( dbg != null ) {
 			dbg.writeString("----- DATAS ----\n\n");
 			for( s in shaderDatas ) {
 				dbg.writeString("\t\t**** " + s.inst.shader.name + (s.p == 0 ? "" : " P="+s.p)+ " *****\n");
-				dbg.writeString(Printer.shaderToString(s.inst.shader,DEBUG_IDS)+"\n\n");
+				dbg.writeString(Printer.shaderToString(s.inst.shader,Debug.VAR_IDS)+"\n\n");
 			}
 		}
 		//TRACE = shaderId == 0;
@@ -289,20 +293,20 @@ class Cache {
 				checkRec(v);
 		}
 
+		#if shader_debug_dump
+		if( dbg != null ) {
+			dbg.writeString("----- LINK ----\n\n");
+			dbg.writeString(Printer.shaderToString(s,Debug.VAR_IDS)+"\n\n");
+		}
+		#end
+
 		#if debug
 		Printer.check(s,[for( s in shaderDatas ) s.inst.shader]);
 		#end
 
-		#if shader_debug_dump
-		if( dbg != null ) {
-			dbg.writeString("----- LINK ----\n\n");
-			dbg.writeString(Printer.shaderToString(s,DEBUG_IDS)+"\n\n");
-		}
-		#end
-
 		var prev = s;
 		var splitter = new hxsl.Splitter();
-		var sl = try splitter.split(s) catch( e : Error ) { e.msg += "\n\nin\n\n"+Printer.shaderToString(s); throw e; };
+		var sl = try splitter.split(s, mode == Batch ) catch( e : Error ) { e.msg += "\n\nin\n\n"+Printer.shaderToString(s); throw e; };
 
 		// params tracking
 		var paramVars = new Map();
@@ -318,33 +322,33 @@ class Cache {
 			}
 
 
+		#if shader_debug_dump
+		if( dbg != null ) {
+			dbg.writeString("----- SPLIT ----\n\n");
+			for( s in sl )
+				dbg.writeString(Printer.shaderToString(s, Debug.VAR_IDS) + "\n\n");
+		}
+		#end
+
 		#if debug
 		for( s in sl )
 			Printer.check(s,[prev]);
 		#end
 
-		#if shader_debug_dump
-		if( dbg != null ) {
-			dbg.writeString("----- SPLIT ----\n\n");
-			for( s in sl )
-				dbg.writeString(Printer.shaderToString(s, DEBUG_IDS) + "\n\n");
-		}
-		#end
-
 		var prev = sl;
 		var sl = new hxsl.Dce().dce(sl);
-
-		#if debug
-		for( i => s in sl )
-			Printer.check(s,[prev[i]]);
-		#end
 
 		#if shader_debug_dump
 		if( dbg != null ) {
 			dbg.writeString("----- DCE ----\n\n");
 			for( s in sl )
-				dbg.writeString(Printer.shaderToString(s, DEBUG_IDS) + "\n\n");
+				dbg.writeString(Printer.shaderToString(s, Debug.VAR_IDS) + "\n\n");
 		}
+		#end
+
+		#if debug
+		for( i => s in sl )
+			Printer.check(s,[prev[i]]);
 		#end
 
 		var r = buildRuntimeShader(sl, paramVars);
@@ -354,7 +358,7 @@ class Cache {
 		if( dbg != null ) {
 			dbg.writeString("----- FLATTEN ----\n\n");
 			for( s in r.getShaders() )
-				dbg.writeString(Printer.shaderToString(s.data, DEBUG_IDS) + "\n\n");
+				dbg.writeString(Printer.shaderToString(s.data, Debug.VAR_IDS) + "\n\n");
 		}
 		#end
 
@@ -481,8 +485,9 @@ class Cache {
 					c.params = out[0];
 					c.paramsSize = size;
 				case TArray(TBuffer(_, _, kind), _):
-					if ( out[0] != null )
-						buffers.push(out[0]);
+					for( outBuf in out )
+						if ( outBuf != null )
+							buffers.push(outBuf);
 				default: throw "assert";
 				}
 			case Global:
@@ -621,18 +626,22 @@ class Cache {
 		hasOffset.qualifiers = [Const()];
 		inputOffset.qualifiers = [PerInstance(1)];
 
+		var useStorage = declVar("Batch_UseStorage",TBool,Param);
 		var vcount = declVar("Batch_Count",TInt,Param);
-		var vbuffer = declVar("Batch_Buffer",TBuffer(TVec(4,VFloat),SVar(vcount),Uniform),Param);
+		var vuniformBuffer = declVar("Batch_Buffer",TBuffer(TVec(4,VFloat),SVar(vcount),Uniform),Param);
+		var vstorageBuffer = declVar("Batch_StorageBuffer",TBuffer(TVec(4,VFloat),SConst(0),RW),Param);
 		var voffset = declVar("Batch_Offset", TInt, Local);
-		var ebuffer = { e : TVar(vbuffer), p : pos, t : vbuffer.type };
+		var euniformBuffer = { e : TVar(vuniformBuffer), p : pos, t : vuniformBuffer.type };
+		var estorageBuffer = { e : TVar(vstorageBuffer), p : pos, t : vstorageBuffer.type };
 		var eoffset = { e : TVar(voffset), p : pos, t : voffset.type };
 		var tvec4 = TVec(4,VFloat);
 		var countBits = 16;
 		vcount.qualifiers = [Const(1 << countBits)];
+		useStorage.qualifiers = [Const()];
 
 		s.data = {
 			name : "batchShader_"+id,
-			vars : [vcount,hasOffset,vbuffer,voffset,inputOffset],
+			vars : [vcount,hasOffset,useStorage,vuniformBuffer,vstorageBuffer,voffset,inputOffset],
 			funs : [],
 		};
 
@@ -683,8 +692,13 @@ class Cache {
 
 		var params = null;
 		var used = [];
+		var added = [];
 
 		function addParam(p:RuntimeShader.AllocParam) {
+			var pid = p.perObjectGlobal != null ? -p.perObjectGlobal.gid : p.instance * 1024 + p.index;
+            if( added.indexOf(pid) >= 0 )
+                return;
+            added.push(pid);
 			var size = switch( p.type ) {
 				case TMat4: 4 * 4;
 				case TVec(n,VFloat): n;
@@ -763,11 +777,11 @@ class Cache {
 		var parentVars = new Map();
 		var swiz = [[X],[Y],[Z],[W]];
 
-		function readOffset( index : Int ) : TExpr {
+		function readOffset( ebuffer, index : Int ) : TExpr {
 			return { e : TArray(ebuffer,{ e : TBinop(OpAdd,eoffset,{ e : TConst(CInt(index)), t : TInt, p : pos }), t : TInt, p : pos }), t : tvec4, p : pos };
 		}
 
-		function extractVar( v : AllocParam ) {
+		function declareLocalVar( v : AllocParam ) {
 			var vreal : TVar = declVar(v.name, v.type, Local);
 			if( v.perObjectGlobal != null ) {
 				var path = v.perObjectGlobal.path.split(".");
@@ -790,42 +804,48 @@ class Cache {
 				}
 			}
 			s.data.vars.push(vreal);
+			return vreal;
+		}
+
+		function extractVar( vreal, ebuffer, v : AllocParam ) {
 			var index = (v.pos>>2);
 			var extract = switch( v.type ) {
 			case TMat4:
 				{ p : pos, t : v.type, e : TCall({ e : TGlobal(Mat4), t : TVoid, p : pos },[
-					readOffset(index),
-					readOffset(index + 1),
-					readOffset(index + 2),
-					readOffset(index + 3),
+					readOffset(ebuffer, index),
+					readOffset(ebuffer, index + 1),
+					readOffset(ebuffer, index + 2),
+					readOffset(ebuffer, index + 3),
 				]) };
 			case TVec(4,VFloat):
-				readOffset(index);
+				readOffset(ebuffer, index);
 			case TVec(3,VFloat):
-				{ p : pos, t : v.type, e : TSwiz(readOffset(index),v.pos&3 == 0 ? [X,Y,Z] : [Y,Z,W]) };
+				{ p : pos, t : v.type, e : TSwiz(readOffset(ebuffer, index),v.pos&3 == 0 ? [X,Y,Z] : [Y,Z,W]) };
 			case TVec(2,VFloat):
 				var swiz = switch( v.pos & 3 ) {
 				case 0: [X,Y];
 				case 1: [Y,Z];
 				default: [Z,W];
 				}
-				{ p : pos, t : v.type, e : TSwiz(readOffset(index),swiz) };
+				{ p : pos, t : v.type, e : TSwiz(readOffset(ebuffer, index),swiz) };
 			case TFloat:
-				{ p : pos, t : v.type, e : TSwiz(readOffset(index),swiz[v.pos&3]) }
+				{ p : pos, t : v.type, e : TSwiz(readOffset(ebuffer, index),swiz[v.pos&3]) }
 			default:
 				throw "assert";
 			}
 			return { p : pos, e : TBinop(OpAssign, { e : TVar(vreal), p : pos, t : v.type }, extract), t : TVoid };
 		}
 
-		var exprs = [];
+		var exprsUniform = [];
+		var exprsStorage = [];
 		var stride = used.length;
 		var p = params;
 		while( p != null ) {
-			exprs.push(extractVar(p));
+			var vreal = declareLocalVar(p);
+			exprsUniform.push(extractVar(vreal, euniformBuffer, p));
+			exprsStorage.push(extractVar(vreal, estorageBuffer, p));
 			p = p.next;
 		}
-
 
 		var inits = [];
 
@@ -852,19 +872,35 @@ class Cache {
 			e : TBinop(OpAssignOp(OpMult),eoffset,{ e : TConst(CInt(stride)), t : TInt, p : pos }),
 		});
 
+		inits.push({
+			p : pos,
+			e : TIf({ e : TVar(useStorage), t : TBool, p : pos },{
+				p : pos,
+				e : TBlock(exprsStorage),
+				t : TVoid,
+			}, {
+				p : pos,
+				e : TBlock(exprsUniform),
+				t : TVoid,
+			}),
+			t : TVoid,
+		});
+
 		var fv : TVar = declVar("init",TFun([]), Function);
 		var f : TFunction = {
 			kind : Init,
 			ref : fv,
 			args : [],
 			ret : TVoid,
-			expr : { e : TBlock(inits.concat(exprs)), p : pos, t : TVoid },
+			expr : { e : TBlock(inits), p : pos, t : TVoid },
 		};
 		s.data.funs.push(f);
-		s.consts = new SharedShader.ShaderConst(vcount,1,countBits+1);
+		s.consts = new SharedShader.ShaderConst(vcount,2,countBits+1);
 		s.consts.globalId = 0;
 		s.consts.next = new SharedShader.ShaderConst(hasOffset,0,1);
 		s.consts.next.globalId = 0;
+		s.consts.next.next = new SharedShader.ShaderConst(useStorage,1,1);
+		s.consts.next.next.globalId = 0;
 
 		return { shader : s, params : params, size : stride };
 	}

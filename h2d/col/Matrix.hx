@@ -123,7 +123,7 @@ class Matrix {
 		var a = m.a, b = m.b;
 		var c = m.c, d = m.d;
 		var x = m.x, y = m.y;
-		var invDet = 1 / getDeterminant();
+		var invDet = 1 / m.getDeterminant();
 		this.a = d * invDet;
 		this.b = -b * invDet;
 		this.c = -c * invDet;
@@ -208,8 +208,9 @@ class Matrix {
 		Returns a Point with a total scaling applied by the Matrix.
 		@param p Optional Point instance. If provided, sets values of given Point and returns it. Otherwise returns new Point instance.
 	**/
-	public inline function getScale() {
-		var p = new h2d.col.Point();
+	public inline function getScale(p: h2d.col.Point = null) {
+		if (p == null)
+			p = new h2d.col.Point();
 		p.x = Math.sqrt(a * a + b * b);
 		p.y = Math.sqrt(c * c + d * d);
 		if( getDeterminant() < 0 ) {

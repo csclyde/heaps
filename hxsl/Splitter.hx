@@ -18,15 +18,19 @@ private class VarProps {
 class Splitter {
 
 	var vars : Map<Int,VarProps>;
+	var avars : Array<VarProps>;
 	var varNames : Map<String,TVar>;
 	var varMap : Map<TVar,TVar>;
+
+	var isBatchShader : Bool;
 
 	public function new() {
 	}
 
-	public function split( s : ShaderData ) : Array<ShaderData> {
-		var vfun = null, vvars = new Map();
-		var ffun = null, fvars = new Map();
+	public function split( s : ShaderData, isBatchShader : Bool  ) : Array<ShaderData> {
+		this.isBatchShader = isBatchShader;
+		var vfun = null, vvars = new Map(), avvars = [];
+		var ffun = null, fvars = new Map(), afvars = [];
 		var isCompute = false;
 		varNames = new Map();
 		varMap = new Map();
@@ -34,11 +38,13 @@ class Splitter {
 			switch( f.kind ) {
 			case Vertex, Main:
 				vars = vvars;
+				avars = avvars;
 				vfun = f;
 				checkExpr(f.expr);
 				if( f.kind == Main ) isCompute = true;
 			case Fragment:
 				vars = fvars;
+				avars = afvars;
 				ffun = f;
 				checkExpr(f.expr);
 			default:
@@ -46,7 +52,9 @@ class Splitter {
 			}
 
 		var vafterMap = [];
-		for( inf in Lambda.array(vvars) ) {
+		var length = avvars.length;
+		for( i in 0...length ) {
+			var inf = avvars[i];
 			var v = inf.v;
 			if( inf.local ) continue;
 			switch( v.kind ) {
@@ -97,7 +105,7 @@ class Splitter {
 
 		var finits = [];
 		var todo = [];
-		for( inf in fvars ) {
+		for( inf in afvars ) {
 			var v = inf.v;
 			switch( v.kind ) {
 			case Input:
@@ -168,8 +176,14 @@ class Splitter {
 		var fvars = [for( v in fvars ) if( !v.local ) v];
 		// make sure we sort the inputs the same way they were sent in
 		inline function getId(v:VarProps) return v.origin == null ? v.v.id : v.origin.id;
-		vvars.sort(function(v1, v2) return getId(v1) - getId(v2));
-		fvars.sort(function(v1, v2) return getId(v1) - getId(v2));
+		inline function compare(v1:VarProps, v2:VarProps) {
+			var result = getId(v1) - getId(v2);
+			if ( result != 0 )
+				return result;
+			return v1.v.id - v2.v.id;
+		}
+		vvars.sort(function(v1, v2) return compare(v1, v2));
+		fvars.sort(function(v1, v2) return compare(v1, v2));
 
 		return isCompute ? [
 			{
@@ -203,12 +217,15 @@ class Splitter {
 	function checkVar( v : VarProps, vertex : Bool, vvars : Map<Int,VarProps>, p ) {
 		switch( v.v.kind ) {
 		case Local if( v.requireInit ):
-			throw new Error("Variable " + v.v.name + " is used without being initialized", p);
+			if ( v.origin.parent == null || (v.origin.parent.name != "global" && !isBatchShader) )
+				throw new Error("Variable " + v.v.name + " is used without being initialized", p);
 		case Var:
 			if( !vertex ) {
 				var i = vvars.get(v.origin.id);
-				if( i != null && i.v.kind == Input ) return;
-				if( i == null || i.write == 0 ) throw new Error("Varying " + v.v.name + " is not written by vertex shader",p);
+				if( i != null && i.v.kind == Input )
+					return;
+				if( v.requireInit && ( i == null || i.write == 0 ) )
+					throw new Error("Varying " + v.v.name + " is not written by vertex shader",p);
 			}
 		default:
 		}
@@ -244,8 +261,17 @@ class Splitter {
 						kind : v.kind,
 						type : v.type,
 					};
-					if( v.qualifiers != null && v.qualifiers.indexOf(Final) >= 0 )
-						nv.qualifiers = [Final];
+					if( v.qualifiers != null ) {
+						for ( q in v.qualifiers ) {
+							switch (q) {
+							case Final, Flat:
+								if ( nv.qualifiers == null )
+									nv.qualifiers = [];
+								nv.qualifiers.push(q);
+							case Const(_), Private, Nullable, PerObject, Name(_), Shared, Precision(_), Range(_,_), Ignore, PerInstance(_), Doc(_), Borrow(_), Sampler(_):
+							}
+						}
+					}
 					uniqueName(nv);
 				}
 				varMap.set(v,nv);
@@ -253,6 +279,7 @@ class Splitter {
 			i = new VarProps(nv);
 			i.origin = v;
 			vars.set(v.id, i);
+			avars.push(i);
 		}
 		return i;
 	}
@@ -302,6 +329,30 @@ class Splitter {
 			inf.local = true;
 			inf.write++;
 			checkExpr(loop);
+		case TSyntax(_, _, args):
+			var arg : Ast.SyntaxArg = null;
+			function checkSyntaxExpr( e : Ast.TExpr) {
+				switch ( e.e ) {
+					case TVar(v):
+						var inf = get(v);
+						// inf.read is decremented in order to keep accurate count of reads
+						// as it will be incremented by checkExpr afterwards
+						switch ( arg.access ) {
+							case Read: inf.read--;
+							case Write: inf.write++;
+							case ReadWrite:
+								inf.read--;
+								inf.write++;
+						}
+					default:
+						e.iter(checkSyntaxExpr);
+				}
+			}
+			for (i in 0...args.length) {
+				arg = args[i];
+				checkSyntaxExpr(arg.e);
+				checkExpr(arg.e);
+			}
 		default:
 			e.iter(checkExpr);
 		}

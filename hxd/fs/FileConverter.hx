@@ -26,13 +26,16 @@ typedef ConvertCommand = {
 
 class FileConverter {
 
+	// Date implementation has a second resolution on some platforms.
+	public static final FILE_TIME_PRECISION = 1000;
+
 	public var configuration(default,null) : String;
 
 	var baseDir : String;
 	var tmpDir : String;
 	var configs : Map<String,ConvertConfig> = new Map();
 	var defaultConfig : ConvertConfig;
-	var cache : Map<String,Array<{ out : String, time : Int, hash : String, ver : Null<Int> }>>;
+	var cache : Map<String,Array<{ out : String, time : Int, hash : String, ver : Null<Int>, milliseconds : Null<Int>, localParamsHash : Null<String>, localContextJson : Null<String> }>>;
 	var cacheTime : Float;
 
 	static var extraConfigs:Array<Dynamic> = [];
@@ -152,6 +155,10 @@ class FileConverter {
 			var a : Array<Dynamic> = v;
 			return [for( v in a ) formatValue(v)].toString();
 		}
+		if( v is haxe.ds.StringMap ) {
+			var m : haxe.ds.StringMap<Dynamic> = v;
+			return [for( k=>v in m ) formatValue(k)+"_"+formatValue(v)].toString();
+		}
 		var fl = Reflect.fields(v);
 		fl.sort(Reflect.compare);
 		return [for( f in fl ) f+"_"+formatValue(Reflect.field(v,f))].join("_");
@@ -182,11 +189,17 @@ class FileConverter {
 	}
 
 	function loadConfig( dir : String ) : ConvertConfig {
-		var c = configs.get(dir);
+		return getConfig(configs, defaultConfig, dir, function(fullObj) {
+			return makeConfig(fullObj);
+		});
+	}
+
+	function getConfig(cachedConfigs : Map<String, Dynamic>, defaultConfig : Dynamic, dir : String, makeConfig : Dynamic -> Dynamic) : Dynamic {
+		var c = cachedConfigs.get(dir);
 		if( c != null ) return c;
 		var dirPos = dir.lastIndexOf("/");
-		var parent = dir == "" ? defaultConfig : loadConfig(dirPos < 0 ? "" : dir.substr(0,dirPos));
-		var propsFile = (dir == "" ? baseDir : baseDir + dir + "/")+"props.json";
+		var parent = dir == "" ? defaultConfig : getConfig(cachedConfigs, defaultConfig, dirPos < 0 ? "" : dir.substr(0,dirPos), (fullObj) -> makeConfig(fullObj));
+		var propsFile = (dir == "" ? baseDir : baseDir + dir + "/") +"props.json";
 		if( !sys.FileSystem.exists(propsFile) ) {
 			c = parent;
 		} else {
@@ -195,7 +208,7 @@ class FileConverter {
 			var fullObj = mergeRec(parent.obj, obj);
 			c = makeConfig(fullObj);
 		}
-		configs.set(dir, c);
+		cachedConfigs.set(dir, c);
 		return c;
 	}
 
@@ -234,8 +247,12 @@ class FileConverter {
 			outFile += e.path.substr(0, -(ext.length + 1));
 		else
 			outFile += e.path;
-		if( cmd.paramsStr != null )
-			outFile += "."+cmd.paramsStr;
+		if( cmd.paramsStr != null ) {
+			var paramsStr = cmd.paramsStr;
+			if( paramsStr.length > 40 )
+				paramsStr = haxe.crypto.Sha1.make(haxe.io.Bytes.ofString(paramsStr)).toHex();
+			outFile += "." + paramsStr;
+		}
 		var conv = null;
 		for( c in cmd.conv )
 			if( c.sourceExts == null || c.sourceExts.indexOf(ext) >= 0 ) {
@@ -297,6 +314,9 @@ class FileConverter {
 				time : 0,
 				hash : "",
 				ver: conv.version,
+				milliseconds : #if js 0 #else null #end,
+				localParamsHash: null,
+				localContextJson: null,
 			};
 			entry.push(match);
 		}
@@ -305,48 +325,74 @@ class FileConverter {
 
 		if( !sys.FileSystem.exists(fullPath) ) throw "Missing "+fullPath;
 
-		var time = std.Math.floor(getFileTime(fullPath) / 1000);
+		var fileTime = getFileTime(fullPath);
+		var time = hxd.Math.floor(fileTime / FILE_TIME_PRECISION);
+		#if js
+		var milliseconds = hxd.Math.floor(fileTime) - time * FILE_TIME_PRECISION;
+		#else
+		var milliseconds = null;
+		#end
 		var alreadyGen = sys.FileSystem.exists(fullOutPath) && match.ver == conv.version #if disable_res_cache && false #end;
 
-		if( alreadyGen && match.time == time )
+		conv.params = params;
+		conv.srcPath = fullPath;
+		conv.dstPath = fullOutPath;
+		conv.baseDir = baseDir;
+		conv.originalFilename = e.name;
+		var hasLocalParams = conv.hasLocalParams();
+
+		if( alreadyGen && !hasLocalParams && match.localParamsHash == null && match.time == time #if js && (match.milliseconds == null || match.milliseconds == milliseconds ) #end ) {
+			conv.cleanup();
 			return; // not changed (time stamp)
+		}
 
 		var content = hxd.File.getBytes(fullPath);
 		var hash = haxe.crypto.Sha1.make(content).toHex();
-		if( alreadyGen && match.hash == hash ) {
+		conv.srcBytes = content;
+		conv.hash = hash;
+		var localContext : Dynamic = null;
+		if( match.ver == conv.version && match.hash == hash && match.localContextJson != null ) {
+			localContext = try { haxe.Json.parse(match.localContextJson); } catch(e) { null; }
+		}
+		var localParams = hasLocalParams ? conv.computeLocalParams(localContext) : null;
+		conv.localParams = localParams;
+		var localParamsHash = localParams == null ? null : haxe.crypto.Sha1.make(haxe.io.Bytes.ofString(formatValue(localParams))).toHex();
+		localContext = conv.getLocalContext();
+		var localContextJson = localContext == null ? null : haxe.Json.stringify(localContext);
+		if( alreadyGen && match.hash == hash && match.localParamsHash == localParamsHash ) {
+			conv.cleanup();
 			match.time = time;
+			match.milliseconds = milliseconds;
+			match.localContextJson = localContextJson;
 			saveCache();
 			return; // not changed (hash)
 		}
 
 		sys.FileSystem.createDirectory(fullOutPath.substr(0, fullOutPath.lastIndexOf("/")));
 
-		conv.srcPath = fullPath;
-		conv.dstPath = fullOutPath;
-		conv.srcBytes = content;
-		conv.originalFilename = e.name;
-		conv.params = params;
 		onConvert(conv);
-		var prev = hxd.System.allowTimeout;
-		hxd.System.allowTimeout = false;
-		conv.convert();
-		if( prev ) hxd.System.timeoutTick();
-		hxd.System.allowTimeout = prev;
-		conv.srcPath = null;
-		conv.dstPath = null;
-		conv.srcBytes = null;
-		conv.originalFilename = null;
-		#if !macro
-		hxd.System.timeoutTick();
-		#end
+		executeConvert(conv);
+		conv.cleanup();
 
 		if( !sys.FileSystem.exists(fullOutPath) )
 			throw "Converted output file "+fullOutPath+" was not created";
 
 		match.ver = conv.version;
 		match.time = time;
+		match.milliseconds = milliseconds;
 		match.hash = hash;
+		match.localParamsHash = localParamsHash;
+		match.localContextJson = localContextJson;
+
 		saveCache();
+	}
+
+	dynamic function executeConvert( conv : Convert ) {
+		var prev = hxd.System.allowTimeout;
+		hxd.System.allowTimeout = false;
+		conv.convert();
+		if( prev ) hxd.System.timeoutTick();
+		hxd.System.allowTimeout = prev;
 	}
 
 }

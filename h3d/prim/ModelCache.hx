@@ -38,7 +38,13 @@ class ModelCache {
 				var parts = path.split(".");
 				parts.pop();
 				parts.push("props");
-				haxe.Json.parse(hxd.res.Loader.currentInstance.load(parts.join(".")).toText());
+				var propsRes = hxd.res.Loader.currentInstance.load(parts.join("."));
+				propsRes.watch(() -> {
+					// Clear this anim cache so the anim and it's props are reloaded the next time they are requested
+					models.remove(path);
+					anims.remove(path);
+				});
+				haxe.Json.parse(propsRes.toText());
 			} catch( e : hxd.res.NotFound )
 				null;
 			m = { lib : res.toHmd(), props : props, col : null, lastTime : 0. };
@@ -60,6 +66,9 @@ class ModelCache {
 			var colliders = [];
 			for( m in lib.header.models ) {
 				if( m.geometry < 0 ) continue;
+				var prim = @:privateAccess lib.makePrimitive(m);
+				if (prim == null)
+					continue;
 				var pos = m.position.toMatrix();
 				var parent = lib.header.models[m.parent];
 				while( parent != null ) {
@@ -67,7 +76,6 @@ class ModelCache {
 					pos.multiply3x4(pos, pp);
 					parent = lib.header.models[parent.parent];
 				}
-				var prim = @:privateAccess lib.makePrimitive(m.geometry);
 				var col = cast(prim.getCollider(), h3d.col.Collider.OptimizedCollider);
 				colliders.push(new h3d.col.TransformCollider(pos,col));
 			}
@@ -167,10 +175,18 @@ class ModelCache {
 		}
 	}
 
+	public function refreshLodConfig() {
+		for ( model in models )
+			for ( p in @:privateAccess model.lib.cachedPrimitives ) {
+				if ( p == null )
+					continue;
+				@:privateAccess p.lodConfig = null;
+			}
+	}
+
 	#if hide
 
 	public function loadPrefab( res : hxd.res.Prefab, ?p : hrt.prefab.Prefab, ?parent : h3d.scene.Object ) {
-		#if prefab2
 		if( p == null )
 			p = res.load();
 		var prevChild = 0;
@@ -195,33 +211,7 @@ class ModelCache {
 				return obj;
 		}
 		return local3d;
-		#else
-		if( p == null )
-			p = res.load();
-		var ctx = new hrt.prefab.Context();
-		ctx.init(res);
-		@:privateAccess ctx.shared.cache = this;
-		var prevChild = 0;
-		if( parent != null ) {
-			ctx.local3d = ctx.shared.root3d = parent;
-			prevChild = parent.numChildren;
-		}
-		var ctx2 = p.make(ctx);
-		if( parent != null ) {
-			// only return object if a single child was added
-			// if not - multiple children were added and cannot be returned as a single object
-			return parent.numChildren == prevChild + 1 ? parent.getChildAt(prevChild) : null;
-		}
-		if( ctx.local3d.numChildren == 1 ) {
-			// if we have a single root with no scale/rotate/offset we can return it
-			var obj = ctx.local3d.getChildAt(0);
-			if( obj.getTransform().isIdentity() )
-				return obj;
-		}
-		return ctx.local3d;
-		#end
 	}
 
 	#end
-
 }

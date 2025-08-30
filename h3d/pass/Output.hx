@@ -63,7 +63,14 @@ class Output {
 
 	function drawObject( p : h3d.pass.PassObject ) {
 		ctx.drawPass = p;
-		ctx.engine.selectMaterial(p.pass);
+		if( ctx.useReverseDepth ) {
+			p.pass.reverseDepthTest();
+			ctx.engine.selectMaterial(p.pass);
+			p.pass.reverseDepthTest();
+		} else {
+			ctx.engine.selectMaterial(p.pass);
+		}
+		p.obj.drawn = true;
 		@:privateAccess p.obj.draw(ctx);
 	}
 
@@ -73,7 +80,9 @@ class Output {
 	public function draw( passes : h3d.pass.PassList, ?sort : h3d.pass.PassList -> Void ) {
 		if( passes.isEmpty() )
 			return;
-		#if sceneprof h3d.impl.SceneProf.begin("draw", ctx.frame); #end
+		#if sceneprof
+		h3d.impl.SceneProf.begin('draw_${@:privateAccess passes.current.pass.name}', ctx.frame);
+		#end
 		ctx.setupTarget();
 		setupShaders(passes);
 		if( sort == null )
@@ -83,6 +92,7 @@ class Output {
 		var buf = ctx.shaderBuffers, prevShader = null;
 		for( p in passes ) {
 			#if sceneprof h3d.impl.SceneProf.mark(p.obj); #end
+			ctx.globalPreviousModelView = p.obj.prevAbsPos ?? p.obj.absPos;
 			ctx.globalModelView = p.obj.absPos;
 			if( p.shader.hasGlobal(ctx.globalModelViewInverse_id.toInt()) )
 				ctx.globalModelViewInverse = p.obj.getInvPos();
@@ -104,9 +114,7 @@ class Output {
 			}
 			if( !p.pass.dynamicParameters ) {
 				ctx.fillParams(buf, p.shader, p.shaders);
-				ctx.engine.uploadShaderBuffers(buf, Params);
-				ctx.engine.uploadShaderBuffers(buf, Textures);
-				ctx.engine.uploadShaderBuffers(buf, Buffers);
+				ctx.engine.uploadInstanceShaderBuffers(buf);
 			}
 			drawObject(p);
 		}

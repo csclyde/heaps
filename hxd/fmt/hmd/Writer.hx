@@ -18,6 +18,8 @@ class Writer {
 		case Unused_HasMaterialFlags:
 		case HasExtraTextures:
 		case FourBonesByVertex:
+		case HasLod:
+		case HasCollider:
 		}
 	}
 
@@ -36,6 +38,8 @@ class Writer {
 	}
 
 	function writeName( name : String ) {
+		if ( name == "" )
+			throw "?";
 		if( name == null ) {
 			out.writeByte(0xFF);
 			return;
@@ -110,16 +114,19 @@ class Writer {
 
 		writeProps(d.props);
 
+		function writeFormat(format : hxd.BufferFormat) {
+			out.writeByte(format.stride);
+			out.writeByte(@:privateAccess format.inputs.length);
+			for( f in format.getInputs() ) {
+				writeName(f.name);
+				out.writeByte(f.type.toInt() | (f.precision.toInt() << 4));
+			}
+		}
 		out.writeInt32(d.geometries.length);
 		for( g in d.geometries ) {
 			writeProps(g.props);
 			out.writeInt32(g.vertexCount);
-			out.writeByte(g.vertexFormat.stride);
-			out.writeByte(@:privateAccess g.vertexFormat.inputs.length);
-			for( f in g.vertexFormat.getInputs() ) {
-				writeName(f.name);
-				out.writeByte(f.type.toInt() | (f.precision.toInt() << 4));
-			}
+			writeFormat(g.vertexFormat);
 			out.writeInt32(g.vertexPosition);
 			if( g.indexCounts.length >= 0xFF ) {
 				out.writeByte(0xFF);
@@ -166,6 +173,13 @@ class Writer {
 				writeName(null);
 			else
 				writeSkin(m.skin);
+			if ( m.lods != null ) {
+				out.writeInt32(m.lods.length);
+				for ( lod in m.lods )
+					out.writeInt32(lod);
+			}
+			if ( m.collider != null && m.collider >= 0 )
+				out.writeInt32(m.collider);
 		}
 
 		out.writeInt32(d.animations.length);
@@ -193,6 +207,32 @@ class Writer {
 					out.writeInt32(e.frame);
 					writeName(e.data);
 				}
+			}
+		}
+
+		out.writeInt32(d.shapes.length);
+		for ( s in d.shapes ) {
+			writeName(s.name);
+			out.writeInt32(s.geom + 1);
+			out.writeInt32(s.vertexCount);
+			writeFormat(s.vertexFormat);
+			out.writeInt32(s.vertexPosition);
+			out.writeInt32(s.indexCount);
+			out.writeInt32(s.remapPosition);
+		}
+
+		if ( d.colliders != null ) {
+			out.writeInt32(d.colliders.length);
+			for ( c in d.colliders ) {
+				out.writeInt32(c.vertexCounts.length);
+				for ( v in c.vertexCounts )
+					out.writeInt32(v);
+				out.writeInt32(c.vertexPosition);
+				if ( c.indexCounts.length != c.vertexCounts.length )
+					throw "assert";
+				for ( i in c.indexCounts )
+					out.writeInt32(i);
+				out.writeInt32(c.indexPosition);
 			}
 		}
 

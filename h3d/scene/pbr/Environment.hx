@@ -97,7 +97,7 @@ class IrradShader extends IrradBase {
 				var amount = n.dot(l).saturate();
 				if( amount > 0 ) {
 					var envColor = gammaCorrect(min(envMap.get(l).rgb, hdrMax));
-					color += envColor * amount;
+					color += envColor * (isSpecular ? amount : 1.0);
 					totalWeight += amount;
 				}
 			}
@@ -187,7 +187,6 @@ class CubeToPanorama extends h3d.shader.ScreenShader {
 		@param var source : SamplerCube;
 
 		function fragment() {
-			var PI = 3.1415926;
 			var fovX = PI * 2;
 			var fovY = PI;
 			var hOffset = (2.0 * PI - fovX) * 0.5;

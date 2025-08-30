@@ -1,6 +1,6 @@
 package hxd;
 
-#if js 
+#if js
 typedef BitmapInnerData = js.html.CanvasRenderingContext2D;
 #else
 typedef BitmapInnerData = BitmapInnerDataImpl;
@@ -97,7 +97,7 @@ class BitmapData {
 		if( x < 0 || y < 0 || width < 0 || height < 0 || srcX < 0 || srcY < 0 || srcWidth < 0 || srcHeight < 0 ||
 			x + width > this.width || y + height > this.height || srcX + srcWidth > src.width || srcY + srcHeight > src.height )
 			throw "Outside bounds";
-		hl.Format.scaleImage(
+		format.hl.Native.scaleImage(
 			data.pixels, (x + y * this.width) << 2, this.width<<2, width, height,
 			src.data.pixels, (srcX + srcY * src.width)<<2, src.width<<2, srcWidth, srcHeight,
 			smooth?1:0
@@ -161,7 +161,7 @@ class BitmapData {
 				clip_y0 = 0;
 				clip_y1 = height-1;
 			} else {
-				if ( y1>=width || y0<0 ) return;
+				if ( y1>=height || y0<0 ) return;
 				sy = -1;
 				y1 = -y1;
 				y0 = -y0;

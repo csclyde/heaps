@@ -3,11 +3,99 @@ package hxd.fmt.fbx;
 import hxd.fmt.fbx.Data;
 import hxd.fmt.hmd.Data;
 
+typedef ExportParams = {
+	forward: String,
+	forwardSign: String,
+	up: String,
+	upSign: String,
+}
+
+
 class Writer {
+	static var unsuported : Array<Dynamic> = [
+		h3d.scene.Interactive,
+		h3d.scene.Box,
+		#if hide hrt.prefab.fx.Emitter.EmitterObject #end
+	];
+
 	var out: haxe.io.Output;
 
 	public function new(out) {
 		this.out = out;
+	}
+
+	public static function getPrimitiveInfos(prim : h3d.prim.Primitive, ?format: BufferFormat, ?lodIdx : Int = 0) @:privateAccess {
+		var infos : {
+			?vertexFormat : BufferFormat,
+			?vertexBuffer : Array<Float>,
+			?indexesBuffer : Array<Int>,
+			?lib : hxd.fmt.hmd.Library
+		};
+
+		infos = {};
+
+		var hmd = Std.downcast(prim, h3d.prim.HMDModel);
+		if (hmd != null) {
+			if (format == null) {
+				infos.vertexFormat = @:privateAccess hmd.lods[lodIdx].vertexFormat;
+				format = infos.vertexFormat;
+			}
+			infos.vertexFormat = format;
+			var bufs = hmd.getLodBuffers(format, lodIdx);
+			infos.indexesBuffer = [for (i in 0...bufs.indexes.length) bufs.indexes[i]];
+			infos.vertexBuffer = [for (i in 0...bufs.vertexes.length) bufs.vertexes[i]];
+			infos.lib = hmd.lib;
+			return infos;
+		}
+
+		var polyPrim = Std.downcast(prim, h3d.prim.Polygon);
+		if (polyPrim != null) {
+			var format = hxd.BufferFormat.POS3D;
+			if( polyPrim.normals != null )
+				format = format.append("normal", DVec3);
+			if( polyPrim.tangents != null )
+				format = format.append("tangent", DVec3);
+			if( polyPrim.uvs != null )
+				format = format.append("uv", DVec2);
+
+			infos.vertexFormat = format;
+
+			var buf = new Array<Float>();
+			for (k in 0...polyPrim.points.length) {
+				var p = polyPrim.points[k];
+				buf.push(p.x);
+				buf.push(p.y);
+				buf.push(p.z);
+				if( polyPrim.normals != null ) {
+					var n = polyPrim.normals[k];
+					buf.push(n.x);
+					buf.push(n.y);
+					buf.push(n.z);
+				}
+				if( polyPrim.tangents != null ) {
+					var t = polyPrim.tangents[k];
+					buf.push(t.x);
+					buf.push(t.y);
+					buf.push(t.z);
+				}
+				if( polyPrim.uvs != null ) {
+					var t = polyPrim.uvs[k];
+					buf.push(t.u);
+					buf.push(t.v);
+				}
+			}
+
+			infos.vertexBuffer = buf;
+
+			if (polyPrim.idx != null)
+				infos.indexesBuffer = [for (i in 0...polyPrim.indexes.count) polyPrim.idx[i]];
+			else
+				infos.indexesBuffer = [for(i in 0...polyPrim.points.length) i];
+
+			return infos;
+		}
+
+		return null;
 	}
 
 	function resolvePathImpl( modelPath : String, filePath : String ) {
@@ -81,28 +169,30 @@ class Writer {
 
 			case PInts(v):
 				{
-					var res = '*${v.length} {\n';
-					res += '${getTabFormat(depth + 1)}a: ';
+					var strBuf : StringBuf = new StringBuf();
+					strBuf.add('*${v.length} {\n');
+					strBuf.add('${getTabFormat(depth + 1)}a: ');
 
 					for (idx => i in v) {
-						res += '${idx != 0 ? ',' : ''}${i}';
+						strBuf.add('${idx != 0 ? ',' : ''}${i}');
 					}
 
-					res += '\n${getTabFormat(depth)}}';
-					return res;
+					strBuf.add('\n${getTabFormat(depth)}}');
+					return strBuf.toString();
 				}
 
 			case PFloats(v):
 				{
-					var res = '*${v.length} {\n';
-					res += '${getTabFormat(depth + 1)}a: ';
+					var strBuf : StringBuf = new StringBuf();
+					strBuf.add('*${v.length} {\n');
+					strBuf.add('${getTabFormat(depth + 1)}a: ');
 
 					for (idx => i in v) {
-						res += '${idx != 0 ? ',' : ''}${i}';
+						strBuf.add('${idx != 0 ? ',' : ''}${i}');
 					}
 
-					res += '\n${getTabFormat(depth)}}';
-					return res;
+					strBuf.add('\n${getTabFormat(depth)}}');
+					return strBuf.toString();
 				}
 
 			default:
@@ -182,7 +272,7 @@ class Writer {
 				{ name: "P", props: [PString("CoordAxisSign"), PString("int"), PString("Integer"), PString(""), PInt(-1) ], childs:null },
 				{ name: "P", props: [PString("OriginalUpAxis"), PString("int"), PString("Integer"), PString(""), PInt(-1) ], childs:null },
 				{ name: "P", props: [PString("OriginalUpAxisSign"), PString("int"), PString("Integer"), PString(""), PInt(1) ], childs:null },
-				{ name: "P", props: [PString("UnitScaleFactor"), PString("double"), PString("Number"), PString(""), PInt(100) ], childs:null },
+				{ name: "P", props: [PString("UnitScaleFactor"), PString("double"), PString("Number"), PString(""), PInt(1) ], childs:null },
 				{ name: "P", props: [PString("OriginalUnitScaleFactor"), PString("double"), PString("Number"), PString(""), PInt(1) ], childs:null },
 				{ name: "P", props: [PString("AmbientColor"), PString("ColorRGB"), PString("Color"), PString(""), PInt(0), PInt(0), PInt(0) ], childs:null },
 				{ name: "P", props: [PString("DefaultCamera"), PString("KString"), PString(""), PString(""), PString("Producer Perspective") ], childs:null },
@@ -468,7 +558,7 @@ class Writer {
 			modelTransform._41 = -modelTransform._41;
 
 			// The model node is used for every object, not only those we have mesh
-			var model : FbxNode = { name:"Model", props: [PInt(modelId), PString('Model::${object.name}'), PString("Mesh")], childs:[
+			var model : FbxNode = { name:"Model", props: [PInt(modelId), PString('Model::${object.name}'), PString(object.isMesh() ? "Mesh" : "Null")], childs:[
 				{ name:"Version", props:[ PInt(232)], childs:null },
 				{ name:"Properties70", props: null, childs: [
 					{ name:"P", props:[PString("InheritType"), PString("enum"), PString(""), PString(""), PInt(1)], childs: null },
@@ -490,65 +580,62 @@ class Writer {
 			var uvs = new Array<Array<Float>>();
 			var indexes = new Array<Int>();
 
-			var hmdModel = Std.downcast(mesh.primitive, h3d.prim.HMDModel);
-			var vertexFormat = @:privateAccess hmdModel.data.vertexFormat;
-			var bufs = hmdModel.getDataBuffers(vertexFormat);
+			var infos = getPrimitiveInfos(mesh.primitive);
 			var idxVertex = 0;
 
 			// Fill mesh informations that will be required in the fbx file
-			while (idxVertex < bufs.vertexes.length) {
+			while (idxVertex < infos.vertexBuffer.length) {
 				var curIndex = idxVertex;
-				vertices.push(-bufs.vertexes[curIndex]); // Convert left hand X coordinate to right hand X coordinate
-				vertices.push(bufs.vertexes[curIndex + 1]);
-				vertices.push(bufs.vertexes[curIndex + 2]);
+				vertices.push(-infos.vertexBuffer[curIndex]); // Convert left hand X coordinate to right hand X coordinate
+				vertices.push(infos.vertexBuffer[curIndex + 1]);
+				vertices.push(infos.vertexBuffer[curIndex + 2]);
 				curIndex += 3;
 
-				if (vertexFormat.hasInput("normal")) {
-					normals.push(-bufs.vertexes[curIndex]); // Convert left hand X coordinate to right hand X coordinate
-					normals.push(bufs.vertexes[curIndex + 1]);
-					normals.push(bufs.vertexes[curIndex + 2]);
+				if (infos.vertexFormat.hasInput("normal")) {
+					normals.push(-infos.vertexBuffer[curIndex]); // Convert left hand X coordinate to right hand X coordinate
+					normals.push(infos.vertexBuffer[curIndex + 1]);
+					normals.push(infos.vertexBuffer[curIndex + 2]);
 					curIndex += 3;
 				}
 
 				// Tangent export isn't supported at the moment
-				if (vertexFormat.hasInput("tangent"))
+				if (infos.vertexFormat.hasInput("tangent"))
 					curIndex += 3;
 
 				var uvIdx = 0;
 				var uvInput = 'uv${ uvIdx == 0 ? "" : '${uvIdx + 1}'}';
-				while(vertexFormat.hasInput(uvInput)) {
+				while(infos.vertexFormat.hasInput(uvInput)) {
 					if (uvs.length < uvIdx + 1)
 						uvs.push(new Array<Float>());
 
-					uvs[uvIdx].push(bufs.vertexes[curIndex]);
-					uvs[uvIdx].push(1 - bufs.vertexes[curIndex + 1]);
+					uvs[uvIdx].push(infos.vertexBuffer[curIndex]);
+					uvs[uvIdx].push(1 - infos.vertexBuffer[curIndex + 1]);
 					curIndex += 2;
 					uvIdx++;
 					uvInput = 'uv${ uvIdx == 0 ? "" : '${uvIdx + 1}'}';
 				}
 
-				idxVertex += vertexFormat.stride;
+				idxVertex += infos.vertexFormat.stride;
 			}
 
 			var idxIndex = 0;
-			while (idxIndex < bufs.indexes.length) {
+			while (idxIndex < infos.indexesBuffer.length) {
 				// We have to flip the order of vertex to change the facing direction of the triangle (because we changed X axis
 				// sign earlier to change from left hand to right hand)
 
-				// /!\ Last vertex index This is because the last index that close the polygon (in our case, we work with triangles, so the third)
+				// /!\ This is because the last index that close the polygon (in our case, we work with triangles, so the third)
 				// need to be increased by one and then set to negative.
 				// (This is because original index is XOR'ed with -1.)
-				indexes.push(bufs.indexes[idxIndex + 1]);
-				indexes.push(bufs.indexes[idxIndex]);
-				indexes.push( -1 * (bufs.indexes[idxIndex + 2] + 1));
+				indexes.push(infos.indexesBuffer[idxIndex + 1]);
+				indexes.push(infos.indexesBuffer[idxIndex]);
+				indexes.push( -1 * (infos.indexesBuffer[idxIndex + 2] + 1));
 
 				idxIndex += 3;
 			}
 
 			var meshMaterials = mesh.getMaterials();
-			var mats = new Array<Int>();
+			var materialIndexes = [];
 			for (idx => mat in meshMaterials ) {
-				var hmdModel = Std.downcast(mesh.primitive, h3d.prim.HMDModel);
 				var materialId = -1;
 
 				// Only write material once in the fbx file
@@ -593,20 +680,26 @@ class Writer {
 
 				objectRegistry.push({ name: "__mat"+mat.name, type: "O", id: materialId, parentId: modelId, property: null });
 
-				var matIndexes = hmdModel.getMaterialIndexes(idx);
-				for (i in 0...Std.int(matIndexes.count / 3))
-					mats.push(idx);
+				if (infos.lib == null)
+					continue;
+
+				var hmd = Std.downcast(mesh.primitive, h3d.prim.HMDModel);
+				if (hmd != null) {
+					var count = hmd.getMaterialIndexCount(idx);
+					for (i in 0...Std.int(count / 3))
+						materialIndexes.push(idx);
+				}
 
 				// Building mat textures
 				var textures = new Array<Dynamic>();
-				for (matData in @:privateAccess hmdModel.lib.header.materials) {
+				for (matData in infos.lib.header.materials) {
 					if (matData.name == mat.name) {
 						if (matData.diffuseTexture != null)
-							@:privateAccess textures.push({ name: matData.diffuseTexture.substr(matData.diffuseTexture.lastIndexOf("/") + 1), path: resolvePathImpl(hmdModel.lib.resource.entry.path ,matData.diffuseTexture), property: "DiffuseColor" });
+							@:privateAccess textures.push({ name: matData.diffuseTexture.substr(matData.diffuseTexture.lastIndexOf("/") + 1), path: resolvePathImpl(infos.lib.resource.entry.path ,matData.diffuseTexture), property: "DiffuseColor" });
 						if (matData.normalMap != null)
-							@:privateAccess textures.push({ name: matData.normalMap.substr(matData.normalMap.lastIndexOf("/") + 1), path: resolvePathImpl(hmdModel.lib.resource.entry.path ,matData.normalMap), property: "NormalMap" });
+							@:privateAccess textures.push({ name: matData.normalMap.substr(matData.normalMap.lastIndexOf("/") + 1), path: resolvePathImpl(infos.lib.resource.entry.path ,matData.normalMap), property: "NormalMap" });
 						if (matData.specularTexture != null)
-							@:privateAccess textures.push({ name : matData.specularTexture.substr(matData.specularTexture.lastIndexOf("/") + 1), path: resolvePathImpl(hmdModel.lib.resource.entry.path ,matData.specularTexture), property: "SpecularFactor" });
+							@:privateAccess textures.push({ name : matData.specularTexture.substr(matData.specularTexture.lastIndexOf("/") + 1), path: resolvePathImpl(infos.lib.resource.entry.path ,matData.specularTexture), property: "SpecularColor" });
 					}
 				}
 
@@ -622,7 +715,7 @@ class Writer {
 							{ name:"P", props: [PString("AlphaSource"), PString("enum"), PString(""), PString(""), PInt(2)], childs: null },
 						] },
 						{ name: "Media", props: [PString('Video::${t.name}')], childs: null },
-						{ name: "Filename", props: [PString(t.path)], childs: null },
+						{ name: "FileName", props: [PString(t.path)], childs: null },
 						{ name: "RelativeFilename", props: [PString("")], childs: null },
 						{ name: "ModelUVTranslation", props: [PFloat(0), PFloat(0)], childs: null },
 						{ name: "ModelUVScaling", props: [PFloat(1), PFloat(1)], childs: null },
@@ -651,7 +744,7 @@ class Writer {
 								{ name:"P", props: [PString("KString"), PString("XRefUrl"), PString(""), PString(t.path)], childs: null },
 							] },
 							{ name: "UseMipMap", props: [PInt(0)], childs: null },
-							{ name: "Filename", props: [PString(t.path)], childs: null },
+							{ name: "FileName", props: [PString(t.path)], childs: null },
 							{ name: "RelativeFilename", props: [PString("")], childs: null },
 						] };
 
@@ -673,15 +766,18 @@ class Writer {
 					{ name: "MappingInformationType", props: [ PString("ByVertice") ], childs: null },
 					{ name: "ReferenceInformationType", props: [ PString("Direct") ], childs: null },
 					{ name: "Normals", props: [ PFloats(normals) ], childs: null },
-				]},
-				{ name:"LayerElementMaterial", props: [PInt(0)], childs: [
+				]}
+			] };
+
+			if (materialIndexes.length > 0) {
+				geometry.childs.push({ name:"LayerElementMaterial", props: [PInt(0)], childs: [
 					{ name: "Version", props: [ PInt(101) ], childs: null },
 					{ name: "Name", props: [ PString("") ], childs: null },
 					{ name: "MappingInformationType", props: [ PString("ByPolygon") ], childs: null },
 					{ name: "ReferenceInformationType", props: [ PString("IndexToDirect") ], childs: null },
-					{ name: "Materials", props: [ PInts(mats) ], childs: null },
-				]}
-			] };
+					{ name: "Materials", props: [ PInts(materialIndexes) ], childs: null },
+				]});
+			}
 
 			// Add all uv maps in layer elements
 			for (idx => uv in uvs) {
@@ -784,5 +880,77 @@ class Writer {
 		out = old;
 
 		out.write(bytes);
+	}
+
+	public function export(toExport: Array<h3d.scene.Object>, destinationPath: String, callb : Void -> Void, ?params : ExportParams) {
+		if (this.out == null)
+			this.out = new haxe.io.BytesOutput();
+
+		function clean( obj : h3d.scene.Object ) : h3d.scene.Object {
+			var supported = true;
+			for (c in unsuported) {
+				if (Std.isOfType(obj, c)) {
+					supported = false;
+					break;
+				}
+			}
+
+			if (!supported || !obj.visible)
+				return null;
+
+			var o = new h3d.scene.Object();
+			var multiMat = Std.downcast(obj, h3d.scene.MultiMaterial);
+			if (multiMat != null)
+				o = new h3d.scene.MultiMaterial(multiMat.primitive, multiMat.materials);
+			else {
+				var m = Std.downcast(obj, h3d.scene.Mesh);
+				if (Std.isOfType(m?.primitive, h3d.prim.HMDModel) || Std.isOfType(m?.primitive, h3d.prim.Cube))
+					o = new h3d.scene.Mesh(m.primitive, m.material);
+			}
+
+			o.x = obj.x;
+			o.y = obj.y;
+			o.z = obj.z;
+			o.scaleX = obj.scaleX;
+			o.scaleY = obj.scaleY;
+			o.scaleZ = obj.scaleZ;
+			@:privateAccess o.qRot.load(@:privateAccess obj.qRot);
+			o.name = obj.name;
+			o.follow = obj.follow;
+			o.followPositionOnly = obj.followPositionOnly;
+			o.visible = obj.visible;
+			if( obj.defaultTransform != null )
+				o.defaultTransform = obj.defaultTransform.clone();
+			for( c in @:privateAccess obj.children ) {
+				var c2 = clean(c);
+				if (c2 == null)
+					continue;
+				@:privateAccess c2.parent = o;
+				@:privateAccess o.children.push(c2);
+			}
+
+			return o;
+		}
+
+		// Clean a bit the object hierarchy to remove non-needed objects
+		// (Interactibles for example)
+		var roots = new Array<h3d.scene.Object>();
+		for (o in toExport) {
+			var t = clean(o);
+			if (t != null)
+				roots.push(t);
+		}
+
+		// Handle the export of selection into a fbx file
+		if (destinationPath != null) {
+			var out = new haxe.io.BytesOutput();
+			new hxd.fmt.fbx.Writer(out).write(roots, params);
+			#if js
+				hxd.File.saveBytes(destinationPath, out.getBytes());
+			#else
+				sys.io.File.saveBytes(destinationPath, out.getBytes());
+			#end
+			callb();
+		}
 	}
 }

@@ -525,6 +525,8 @@ class Scene extends Layers implements h3d.IDrawable implements hxd.SceneEvents.I
 		screenToViewport(event);
 		var ex = event.relX;
 		var ey = event.relY;
+		if( ex < 0 || ey < 0 || ex >= width || ey >= height )
+			return null;
 		var index = last == null ? 0 : interactive.indexOf(cast last) + 1;
 		var pt = shapePoint;
 		for( idx in index...interactive.length ) {
@@ -782,14 +784,19 @@ class Scene extends Layers implements h3d.IDrawable implements hxd.SceneEvents.I
 		ctx.frame++;
 		ctx.time += ctx.elapsedTime;
 		ctx.globalAlpha = alpha;
+		mark("s2d");
 		sync(ctx);
-		if( children.length == 0 ) return;
-		ctx.begin();
-		#if sceneprof h3d.impl.SceneProf.begin("2d", ctx.frame); #end
-		ctx.drawScene();
-		#if sceneprof h3d.impl.SceneProf.end(); #end
-		ctx.end();
+		if( children.length != 0 ) {
+			ctx.begin();
+			#if sceneprof h3d.impl.SceneProf.begin("2d", ctx.frame); #end
+			ctx.drawScene();
+			#if sceneprof h3d.impl.SceneProf.end(); #end
+			ctx.end();
+		}
+		mark("vsync");
 	}
+
+	public dynamic function mark(name : String) {}
 
 	override function sync( ctx : RenderContext ) {
 		var forceCamSync = posChanged;
@@ -900,11 +907,12 @@ class Scene extends Layers implements h3d.IDrawable implements hxd.SceneEvents.I
 			var tex = new h3d.mat.Texture(width, height, [Target]);
 			target = new Tile(tex,0, 0, width, height);
 		}
-		engine.begin();
-		engine.setRenderZone(Std.int(target.x), Std.int(target.y), hxd.Math.ceil(target.width), hxd.Math.ceil(target.height));
 
 		var tex = target.getTexture();
+		engine.begin();
 		engine.pushTarget(tex);
+		engine.setRenderZone(Std.int(target.x), Std.int(target.y), hxd.Math.ceil(target.width), hxd.Math.ceil(target.height));
+
 		var ow = width, oh = height, ova = viewportA, ovd = viewportD, ovx = viewportX, ovy = viewportY;
 		width = tex.width;
 		height = tex.height;

@@ -20,6 +20,16 @@ class Scene extends Object implements h3d.IDrawable implements hxd.SceneEvents.I
 	**/
 	public var renderer(default,set) : Renderer;
 
+	public var offsetX : Float = 0;
+	public var offsetY : Float = 0;
+	public var ratioX : Float = 1;
+	public var ratioY : Float = 1;
+
+	/**
+		Adjust the position of the ray used to handle interactives.
+	**/
+	public var interactiveOffset : Float = 0;
+
 	var ctx : RenderContext;
 	var interactives : Array<Interactive>;
 	@:allow(h3d.scene.Interactive)
@@ -119,12 +129,22 @@ class Scene extends Object implements h3d.IDrawable implements hxd.SceneEvents.I
 			return null;
 
 		if( hitInteractives.length == 0 ) {
+			var x = event.relX - offsetX;
+			var y = event.relY - offsetY;
 
-			var screenX = (event.relX / window.width - 0.5) * 2;
-			var screenY = -(event.relY / window.height - 0.5) * 2;
+			var width = ratioX * window.width;
+			var height = ratioY * window.height;
+			var screenX = (x / width - 0.5) * 2;
+			var screenY = -(y / height - 0.5) * 2;
+
 			var p0 = camera.unproject(screenX, screenY, 0);
 			var p1 = camera.unproject(screenX, screenY, 1);
 			var r = h3d.col.Ray.fromPoints(p0.toPoint(), p1.toPoint());
+			if( interactiveOffset != 0 ) {
+				r.px += r.lx * interactiveOffset;
+				r.py += r.ly * interactiveOffset;
+				r.pz += r.lz * interactiveOffset;
+			}
 			var saveR = r.clone();
 			var priority = 0x80000000;
 
@@ -179,9 +199,10 @@ class Scene extends Object implements h3d.IDrawable implements hxd.SceneEvents.I
 					var wfactor = 0.;
 
 					// adjust result with better precision
-					if( i.preciseShape != null ) {
-						r.transform(m);
-						var hit = i.preciseShape.rayIntersection(r, i.bestMatch);
+					if( i.preciseShape != null || !i.bestMatch ) {
+						if( !i.isAbsoluteShape )
+							r.transform(m);
+						var hit = (i.preciseShape ?? i.shape).rayIntersection(r, true);
 						if( hit > 0 ) {
 							var hitPoint = r.getPoint(hit);
 							i.hitPoint.x = hitPoint.x;
@@ -194,7 +215,8 @@ class Scene extends Object implements h3d.IDrawable implements hxd.SceneEvents.I
 
 					var p = i.hitPoint.clone();
 					p.w = 1;
-					p.transform3x4(i.absPos);
+					if( !i.isAbsoluteShape )
+						p.transform3x4(i.absPos);
 					p.project(camera.m);
 					i.hitPoint.w = p.z + wfactor;
 				}
@@ -331,13 +353,16 @@ class Scene extends Object implements h3d.IDrawable implements hxd.SceneEvents.I
 
 		ctx.start();
 		renderer.start();
+		renderer.startEffects();
 
 		#if sceneprof h3d.impl.SceneProf.begin("sync", ctx.frame); #end
+		mark("sync");
 		syncRec(ctx);
 		#if sceneprof
 		h3d.impl.SceneProf.end();
 		h3d.impl.SceneProf.begin("emit", ctx.frame);
 		#end
+		mark("emit");
 		emitRec(ctx);
 		#if sceneprof h3d.impl.SceneProf.end(); #end
 
@@ -365,7 +390,7 @@ class Scene extends Object implements h3d.IDrawable implements hxd.SceneEvents.I
 		renderer.process(passes);
 
 		// check that passes have been rendered
-		#if debug
+		#if (debug && !editor)
 		if( !ctx.computingStatic && checkPasses)
 			for( p in passes )
 				if( !p.rendered )
@@ -382,6 +407,10 @@ class Scene extends Object implements h3d.IDrawable implements hxd.SceneEvents.I
 			p.name = null;
 			p.passes.init(null);
 		}
+	}
+
+	public dynamic function mark(name : String) {
+		@:privateAccess renderer.mark(name);
 	}
 
 	var prevDB : h3d.mat.Texture;
@@ -410,5 +439,9 @@ class Scene extends Object implements h3d.IDrawable implements hxd.SceneEvents.I
 			prevDB = null;
 			prevEngine = null;
 		}
+	}
+
+	public function getRenderCamera() {
+		return ctx.camera;
 	}
 }

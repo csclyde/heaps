@@ -23,6 +23,10 @@ class Reader {
 			return HasExtraTextures;
 		case 3:
 			return FourBonesByVertex;
+		case 4:
+			return HasLod;
+		case 5:
+			return HasCollider;
 		case unk:
 			throw "Unknown property #" + unk;
 		}
@@ -125,6 +129,11 @@ class Reader {
 		return s;
 	}
 
+	function readLods() {
+		var lodCount = i.readInt32();
+		return [for (_ in 0...lodCount) i.readInt32()];
+	}
+
 	public function readHeader( fast = false ) : Data {
 		var d = new Data();
 		var h = i.readString(3);
@@ -142,17 +151,21 @@ class Reader {
 			i = new haxe.io.BytesInput(i.read(d.dataPosition-12));
 		d.props = readProps();
 
-		for( k in 0...i.readInt32() ) {
-			var g = new Geometry();
-			g.props = readProps();
-			g.vertexCount = i.readInt32();
+		inline function makeFormat() {
 			var stride = i.readByte();
-			g.vertexFormat = hxd.BufferFormat.make([for( k in 0...i.readByte() ) {
+			var format = hxd.BufferFormat.make([for( k in 0...i.readByte() ) {
 				var name = readCachedName();
 				var type = i.readByte();
 				new GeometryFormat(name, @:privateAccess GeometryDataFormat.fromInt(type&15), @:privateAccess hxd.BufferFormat.Precision.fromInt(type>>4));
 			}]);
-			if( stride != g.vertexFormat.stride ) throw "assert";
+			if ( stride != format.stride ) throw "assert";
+			return format;
+		}
+		for( k in 0...i.readInt32() ) {
+			var g = new Geometry();
+			g.props = readProps();
+			g.vertexCount = i.readInt32();
+			g.vertexFormat = makeFormat();
 			g.vertexPosition = i.readInt32();
 			var subCount = i.readByte();
 			if( subCount == 0xFF ) subCount = i.readInt32();
@@ -179,6 +192,7 @@ class Reader {
 		}
 
 		d.models = [];
+		var hasCollider = false;
 		for( k in 0...i.readInt32() ) {
 			var m = new Model();
 			m.props = readProps();
@@ -195,6 +209,13 @@ class Reader {
 			for( k in 0...matCount )
 				m.materials.push(i.readInt32());
 			m.skin = readSkin();
+			if ( m.props != null ) {
+				m.lods = m.props.contains(HasLod) ? readLods() : null;
+				if ( m.props.contains(HasCollider) ) {
+					m.collider = i.readInt32();
+					hasCollider = true;
+				}
+			}
 		}
 
 		d.animations = [];
@@ -227,6 +248,36 @@ class Reader {
 				}
 			}
 			d.animations.push(a);
+		}
+
+		if ( d.version >= 4 ) {
+			var shapeLength = i.readInt32();
+			d.shapes = [];
+			for ( k in 0...shapeLength ) {
+				var s = new BlendShape();
+				s.name = readName();
+				s.geom = i.readInt32() - 1;
+				s.vertexCount = i.readInt32();
+				s.vertexFormat = makeFormat();
+				s.vertexPosition = i.readInt32();
+				s.indexCount = i.readInt32();
+				s.remapPosition = i.readInt32();
+				d.shapes.push(s);
+			}
+		}
+
+		if ( hasCollider ) {
+			d.colliders = [];
+			var colliderLength = i.readInt32();
+			for ( k in 0...colliderLength ) {
+				var c = new Collider();
+				var n = i.readInt32();
+				c.vertexCounts = [for ( v in 0...n) i.readInt32()];
+				c.vertexPosition = i.readInt32();
+				c.indexCounts = [for ( v in 0...n) i.readInt32()];
+				c.indexPosition = i.readInt32();
+				d.colliders.push(c);
+			}
 		}
 
 		return d;

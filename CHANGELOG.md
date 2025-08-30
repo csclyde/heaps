@@ -1,3 +1,17 @@
+## 2.1.0 (March, 23, 2025)
+* Added Compute Shaders support (GL/DX12 only)
+* Added HxSL support for: Samplers 1D/3D, RWBuffer, RWTexture, and partial buffers
+* Scene to FBX Exporter
+* Major improvements of DX12 driver
+* Added HMD LOD and Mesh Optimization support
+* HierarchicalWorld support
+* Cascade shadow maps support
+* Dynamic bones support
+* ... and many many other improvements
+
+## 2.0.1 (December, 3, 2024)
+* fix h2d.Object.move method to perform local movement as intended
+
 ## 2.0 (January 1, 2024)
 
 * changed h3d.Vector to be a 3 component vector (alias to h3d.col.Point), added h3d.Vector4

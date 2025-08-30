@@ -69,7 +69,13 @@ class CustomParser extends domkit.CssValue.ValueParser {
 		// TODO : compile-time path check?
 		return true;
 		#else
-		return try hxd.res.Loader.currentInstance.load(path) catch( e : hxd.res.NotFound ) invalidProp("Resource not found "+path);
+		return try {
+			var f = hxd.res.Loader.currentInstance.load(path);
+			if( f.entry.isDirectory ) invalidProp("Resource should be a file "+path);
+			return f;
+		} catch( e : hxd.res.NotFound ) {
+			invalidProp("Resource not found "+path);
+		}
 		#end
 	}
 
@@ -177,16 +183,28 @@ class CustomParser extends domkit.CssValue.ValueParser {
 	public function parseFont( value : CssValue ) {
 		var path = null;
 		var sdf = null;
-		var offset = 0;
+		var offset: Null<Int> = null, offsetChar = 0;
+		var lineHeight : Null<Float> = null, baseLine: Null<Int> = null;
 		switch(value) {
 			case VGroup(args):
 				var args = args.copy();
 				path = parsePath(args[0]);
-				switch( args[1] ) {
-				case VCall("offset", [v]):
-					offset = parseInt(v);
+				while (args[1] != null && args[1].match(VCall(_))) {
+					switch( args[1] ) {
+					case VCall("offset", [VIdent("auto")]):
+						offsetChar = -1;
+					case VCall("offset", [VString(c)]) if( c.length == 1 ):
+						offsetChar = c.charCodeAt(0);
+					case VCall("offset", [v]):
+						offset = parseInt(v);
+					case VCall("line-height", [v]):
+						lineHeight = parseFloat(v);
+					case VCall("base-line", [v]):
+						baseLine = parseInt(v);
+					default:
+						break;
+					}
 					args.splice(1,1);
-				default:
 				}
 				if( args[1] != null ) {
 					sdf = {
@@ -215,8 +233,18 @@ class CustomParser extends domkit.CssValue.ValueParser {
 			fnt = res.to(hxd.res.BitmapFont).toSdfFont(sdf.size, sdf.channel, sdf.cutoff, sdf.smooth);
 		else
 			fnt = res.to(hxd.res.BitmapFont).toFont();
-		if( offset != 0 )
-			@:privateAccess fnt.baseLine = fnt.calcBaseLine() - offset;
+		var defChar = offsetChar <= 0 ? fnt.getChar("A".code) ?? fnt.getChar("0".code) ?? fnt.getChar("a".code) : fnt.getChar(offsetChar);
+		if( offsetChar != 0 && defChar != null )
+			offset = -Math.ceil(defChar.t.dy) + Std.int(@:privateAccess fnt.offsetY);
+		if( offset != null || baseLine != null) {
+			var prev = @:privateAccess fnt.offsetY;
+			fnt.setOffset(0,offset);
+			@:privateAccess fnt.lineHeight += offset - prev;
+			@:privateAccess fnt.baseLine = fnt.calcBaseLine() + baseLine;
+		}
+		if( lineHeight != null && defChar != null ) {
+			@:privateAccess fnt.lineHeight = Math.ceil(defChar.t.height * lineHeight);
+		}
 		return fnt;
 		#end
 	}
@@ -236,7 +264,10 @@ class CustomParser extends domkit.CssValue.ValueParser {
 		}
 	}
 
+	static var NULL_BG : FlowBg = { color : 0xFFFFFF, borderL : 0, borderR : 0, borderT : 0, borderB : 0, tile : null };
 	function transitionFlowBackground( bg1 : FlowBg, bg2 : FlowBg, v : Float ) : FlowBg {
+		if( bg1 == null ) bg1 = NULL_BG;
+		if( bg2 == null ) bg2 = NULL_BG;
 		var color = transitionColor(bg1.color, bg2.color, v);
 		return {
 			tile : #if macro true #else h2d.Tile.fromColor(color&0xFFFFFF,(color>>>24)/255) #end,
@@ -333,6 +364,18 @@ class CustomParser extends domkit.CssValue.ValueParser {
 			#else
 				new h2d.filter.Glow(c, a, r, g, q, b);
 			#end
+		case VCall("glow",[VIdent("none"), r, g, q]):
+			var r = parseFloat(r);
+			var g = parseFloat(g);
+			var q = parseFloat(q);
+			#if macro
+				true;
+			#else
+				var glow = new h2d.filter.Glow(0xFFFFFF, 0., r, g, q);
+				// since 'hasFixedColor' is set to false, alpha will be ignored.
+				@:privateAccess glow.pass.shader.hasFixedColor = false;
+				glow;
+			#end
 		case VCall("blur",[r]):
 			var r = parseFloat(r);
 			#if macro
@@ -412,6 +455,63 @@ class CustomParser extends domkit.CssValue.ValueParser {
 		return adj;
 	}
 
+	public function parseAngleRad(value:CssValue) : Float {
+		return switch(value) {
+			case VUnit(v, "rad"):
+				v;
+			case VUnit(v, "deg"):
+				hxd.Math.degToRad(v);
+			default:
+				parseFloat(value);
+		}
+		return 0.;
+	}
+
+	public function parseAngleDeg(value:CssValue) : Float {
+		return switch(value) {
+			case VUnit(v, "rad"):
+				hxd.Math.radToDeg(v);
+			case VUnit(v, "deg"):
+				v;
+			default:
+				parseFloat(value);
+		}
+		return 0.;
+	}
+
+	function parseTagDefinition(value:CssValue) : {name:String,?font:String,?color:Int} {
+		return switch( value ) {
+		case VCall(id,[VString(font)]):
+			{name:id,font:font};
+		case VCall(id,[v = VIdent(c)]):
+			try {name:id,color:parseColor(v)} catch( e : InvalidProperty ) {name:id,font:c};
+		case VCall(id,[v]):
+			{name:id,color:parseColor(v)};
+		case VCall(id,[VString(font)|VIdent(font),col]):
+			{name:id,font:font,color:parseColor(col)};
+		default:
+			invalidProp();
+		}
+	}
+
+	public function parseTagDefinitions(value:CssValue) {
+		return switch(value) {
+		case VGroup(values): [for( v in values ) parseTagDefinition(v)];
+		default: [parseTagDefinition(value)];
+		}
+	}
+
+	public function parseMargin(value:CssValue) {
+		return switch(value) {
+		case VIdent("ignore-parent"): #if macro 0 #else h2d.Flow.PADDING_IGNORE_PARENT #end;
+		default: parseInt(value);
+		}
+	}
+
+	public function parseMarginBox( v : CssValue ) {
+		return parseGenBox(v,parseMargin);
+	}
+
 }
 
 #if !macro
@@ -421,21 +521,21 @@ class ObjectComp implements h2d.domkit.Object implements domkit.Component.Compon
 	@:p var x : Float;
 	@:p var y : Float;
 	@:p var alpha : Float = 1;
-	@:p var rotation : Float;
+	@:p(angleDeg) var rotation : Float;
 	@:p var visible : Bool = true;
 	@:p(scale) var scale : { x : Float, y : Float };
-	@:p var scaleX : Float;
-	@:p var scaleY : Float;
+	@:p var scaleX : Float = 1;
+	@:p var scaleY : Float = 1;
 	@:p var blend : h2d.BlendMode = Alpha;
 	@:p(filter) var filter : h2d.filter.Filter;
 	@:p var filterSmooth : Bool;
 
 	// flow properties
-	@:p(box) var margin : { left : Int, top : Int, right : Int, bottom : Int };
-	@:p var marginLeft = 0;
-	@:p var marginRight = 0;
-	@:p var marginTop = 0;
-	@:p var marginBottom = 0;
+	@:p(marginBox) var margin : { left : Int, top : Int, right : Int, bottom : Int };
+	@:p(margin) var marginLeft = 0;
+	@:p(margin) var marginRight = 0;
+	@:p(margin) var marginTop = 0;
+	@:p(margin) var marginBottom = 0;
 	@:p(align) var align : { v : h2d.Flow.FlowAlign, h : h2d.Flow.FlowAlign };
 	@:p(hAlign) var halign : h2d.Flow.FlowAlign;
 	@:p(vAlign) var valign : h2d.Flow.FlowAlign;
@@ -653,6 +753,8 @@ class BitmapComp extends DrawableComp implements domkit.Component.ComponentDecl<
 
 	@:p(tile) var src : h2d.Tile;
 	@:p(tilePos) var srcPos : { p : Int, ?y : Int };
+	@:p var srcFlipX : Null<Bool>;
+	@:p var srcFlipY : Null<Bool>;
 	@:p var srcPosX : Null<Int>;
 	@:p var srcPosY : Null<Int>;
 	@:p(auto) var width : Null<Float>;
@@ -678,6 +780,14 @@ class BitmapComp extends DrawableComp implements domkit.Component.ComponentDecl<
 		o.tile = setTilePosY(o.tile, y);
 	}
 
+	static function set_srcFlipX( o : h2d.Bitmap, b: Bool ) {
+		o.tile = setTileFlipX(o.tile, b);
+	}
+
+	static function set_srcFlipY( o : h2d.Bitmap, b: Bool ) {
+		o.tile = setTileFlipY(o.tile, b);
+	}
+
 	static function setTilePos( t : h2d.Tile, pos : Null<{ p : Int, ?y : Int }> ) {
 		if( t == null ) return null;
 		if( pos == null ) pos = {p:0};
@@ -701,6 +811,30 @@ class BitmapComp extends DrawableComp implements domkit.Component.ComponentDecl<
 		if( t == null ) return null;
 		t = t.clone();
 		t.setPosition(t.ix, y * t.iheight);
+		return t;
+	}
+
+	static function setTileFlipX(t : h2d.Tile, b : Bool) {
+		if (t == null) return null;
+		var xFlip = t.u2 < t.u;
+		if (xFlip != b) {
+			t = t.clone();
+			var tmp = t.u;
+			t.u = t.u2;
+			t.u2 = tmp;
+		}
+		return t;
+	}
+
+	static function setTileFlipY(t : h2d.Tile, b : Bool) {
+		if (t == null) return null;
+		var yFlip = t.v2 < t.v;
+		if (yFlip != b) {
+			t = t.clone();
+			var tmp = t.v;
+			t.v = t.v2;
+			t.v2 = tmp;
+		}
 		return t;
 	}
 
@@ -754,6 +888,7 @@ class TextComp extends DrawableComp implements domkit.Component.ComponentDecl<h2
 class HtmlTextComp extends TextComp implements domkit.Component.ComponentDecl<h2d.HtmlText> {
 	@:p var condenseWhite : Bool;
 	@:p var propagateInteractiveNode: Bool;
+	@:p(tagDefinitions) var tags : Array<{name:String,font:String,color:Int}>;
 
 	static function create( parent : h2d.Object ) {
 		return new h2d.HtmlText(hxd.res.DefaultFont.get(),parent);
@@ -766,6 +901,11 @@ class HtmlTextComp extends TextComp implements domkit.Component.ComponentDecl<h2
 	static function set_propagateInteractiveNode(o : h2d.HtmlText, v) {
 		o.propagateInteractiveNode = v;
 	}
+
+	static function set_tags( o : h2d.HtmlText, tags:Array<{name:String,font:String,color:Int}>) {
+		o.defineHtmlTags(tags);
+	}
+
 }
 
 @:uiComp("scale-grid") @:domkitDecl
@@ -1042,6 +1182,7 @@ class InputComp extends TextComp implements domkit.Component.ComponentDecl<h2d.T
 	@:p(tile) var selection : h2d.Tile;
 	@:p var edit : Bool;
 	@:p(color) @:t(color) var backgroundColor : Null<Int>;
+	@:p var multiline : Bool;
 
 	static function create( parent : h2d.Object ) {
 		return new h2d.TextInput(hxd.res.DefaultFont.get(),parent);
@@ -1065,6 +1206,10 @@ class InputComp extends TextComp implements domkit.Component.ComponentDecl<h2d.T
 
 	static function set_backgroundColor( o : h2d.TextInput, col ) {
 		o.backgroundColor = col;
+	}
+
+	static function set_multiline( o : h2d.TextInput, b ) {
+		o.multiline = b;
 	}
 
 }

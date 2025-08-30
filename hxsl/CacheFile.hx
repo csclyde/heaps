@@ -41,13 +41,13 @@ class CacheFile extends Cache {
 
 	public var allowSave = #if usesys false #else true #end;
 
-	public function new( allowCompile, recompileRT = false ) {
+	public function new( allowCompile, recompileRT = false, showProgress = false ) {
 		super();
 		this.allowCompile = allowCompile;
 		this.recompileRT = recompileRT || allowCompile;
 		this.file = FILENAME;
 		sourceFile = this.file + "." + getPlatformTag();
-		load();
+		load(showProgress);
 	}
 
 	function getPlatformTag() {
@@ -83,7 +83,7 @@ class CacheFile extends Cache {
 
 	static var HEX = "0123456789abcdef";
 
-	function load() {
+	function load(showProgress=false) {
 		isLoading = true;
 		var t0 = haxe.Timer.stamp();
 		var wait = [];
@@ -113,15 +113,36 @@ class CacheFile extends Cache {
 			}
 		}
 		if( wait.length > 0 ) {
+			var fullCount = wait.length;
 			waitCount += wait.length;
 			#if hlmulti
+			var t1 = haxe.Timer.stamp();
 			for( r in wait ) {
+				if (showProgress && (waitCount % 5 == 0 || waitCount <= 1)) {
+					var progress = Std.int((1 - (waitCount / fullCount)) * 1000) / 10;
+					log('$progress%  \t(${fullCount - waitCount}/$fullCount)  \r');
+				}
+
 				addNewShader(r);
 				hxd.System.timeoutTick();
 			}
+			if (showProgress) {
+				log("");
+				var t = haxe.Timer.stamp() - t1;
+				var m = hxd.Math.round(t / 60);
+				var s = t - m * 60;
+				log('$waitCount generated in ${m}m ${hxd.Math.fmt(s)}s');
+			}
 			#else
 			haxe.Timer.delay(function() {
-				for( r in wait ) {
+				var shaderCount = wait.length;
+				if ( showProgress )
+					log('Compiling ${shaderCount} shaders');
+				for( i => r in wait ) {
+					if ( showProgress && i % 5 == 0 ) {
+						var progress = Std.int((i / shaderCount) * 1000) / 10;
+						log('$progress%  \t($i/$shaderCount)  \r');
+					}
 					addNewShader(r);
 					hxd.System.timeoutTick();
 				}
@@ -139,6 +160,16 @@ class CacheFile extends Cache {
 	}
 
 	function resolveShader( name : String ) : hxsl.Shader {
+		if ( StringTools.endsWith(name, ".shgraph") ) {
+			#if hide
+			var shgraph : hrt.shgraph.ShaderGraph = try cast hxd.res.Loader.currentInstance.load(name).toPrefab().load() catch( e : hxd.res.NotFound ) null;
+			if (shgraph == null)
+				return null;
+			return shgraph.makeShaderInstance();
+			#else
+			return null;
+			#end
+		}
 		var cl = Type.resolveClass(name);
 		if( cl == null )
 			return null;

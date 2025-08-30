@@ -112,11 +112,9 @@ class CubeShadowMap extends Shadows {
 
 	var tmpTex : h3d.mat.Texture;
 	override function createDefaultShadowMap() {
-		if( tmpTex != null) return tmpTex;
-		if ( mode == Mixed )
-			tmpTex = new h3d.mat.Texture(size,size, [Target,Cube], format);
-		else
-			tmpTex = new h3d.mat.Texture(1,1, [Target,Cube], format);
+		if( tmpTex != null)
+			return tmpTex;
+		tmpTex = new h3d.mat.Texture(1,1, [Target,Cube], format);
 		tmpTex.name = "defaultCubeShadowMap";
 		tmpTex.realloc = function() clear(tmpTex);
 		clear(tmpTex);
@@ -150,7 +148,7 @@ class CubeShadowMap extends Shadows {
 			return;
 
 		if( passes.isEmpty() ) {
-			syncShader(staticTexture == null ? createDefaultShadowMap() : staticTexture);
+			syncEarlyExit();
 			return;
 		}
 
@@ -158,11 +156,13 @@ class CubeShadowMap extends Shadows {
 		cullPasses(passes,function(col) return cull(lightCollider, col));
 
 		if( passes.isEmpty() ) {
-			syncShader(staticTexture == null ? createDefaultShadowMap() : staticTexture);
+			syncEarlyExit();
 			return;
 		}
 
-		var texture = ctx.computingStatic ? createStaticTexture() : ctx.textures.allocTarget("pointShadowMap", size, size, false, format, [Cube]);
+		var computingStatic = ctx.computingStatic || updateStatic;  
+
+		var texture = computingStatic ? createStaticTexture() : ctx.textures.allocTarget("pointShadowMap", size, size, false, format, [Cube]);
 		if( depth == null || depth.width != texture.width || depth.height != texture.height || depth.isDisposed() ) {
 			if( depth != null ) depth.dispose();
 			depth = new h3d.mat.Texture(texture.width, texture.height, Depth24Stencil8);
@@ -215,29 +215,28 @@ class CubeShadowMap extends Shadows {
 		if( blur.radius > 0 )
 			blur.apply(ctx, texture);
 
-		if( mode == Mixed && !ctx.computingStatic )
+		if( mode == Mixed && !computingStatic )
 			syncShader(merge(texture));
 		else
 			syncShader(texture);
 
+		updateStatic = false;
 	}
 
 	function merge( dynamicTex : h3d.mat.Texture ) : h3d.mat.Texture{
-		var validBakedTexture = (staticTexture != null && staticTexture.width == dynamicTex.width);
-		var merge : h3d.mat.Texture = null;
-		if( mode == Mixed && !ctx.computingStatic && validBakedTexture)
-			merge = ctx.textures.allocTarget("mergedPointShadowMap", size, size, false, format, [Cube]);
-
-		if( mode == Mixed && !ctx.computingStatic && merge != null ) {
-			for( i in 0 ... 6 ) {
-				if( !faceMask.has(CubeFaceFlag.createByIndex(i)) ) continue;
-				mergePass.shader.texA = dynamicTex;
-				mergePass.shader.texB = staticTexture;
-				mergePass.shader.mat = cubeDir[i];
-				ctx.engine.pushTarget(merge, i);
-				mergePass.render();
-				ctx.engine.popTarget();
-			}
+		if ( staticTexture == null || staticTexture.isDisposed() )
+			return dynamicTex;
+		if ( staticTexture.width != dynamicTex.width )
+			throw "Static shadow map doesnt match dynamic shadow map";
+		var merge = ctx.textures.allocTarget("mergedPointShadowMap", size, size, false, format, [Cube]);
+		for( i in 0 ... 6 ) {
+			if( !faceMask.has(CubeFaceFlag.createByIndex(i)) ) continue;
+			mergePass.shader.texA = dynamicTex;
+			mergePass.shader.texB = staticTexture;
+			mergePass.shader.mat = cubeDir[i];
+			ctx.engine.pushTarget(merge, i);
+			mergePass.render();
+			ctx.engine.popTarget();
 		}
 		return merge;
 	}

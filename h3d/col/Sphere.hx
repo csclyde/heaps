@@ -39,21 +39,18 @@ class Sphere extends Collider {
 	}
 
 	public function rayIntersection( r : Ray, bestMatch : Bool ) : Float {
-		var r2 = this.r * this.r;
-		var px = r.px + r.lx;
-		var py = r.py + r.ly;
-		var pz = r.pz + r.lz;
-
-		var a = r.lx * r.lx + r.ly * r.ly + r.lz * r.lz;
-		var b = 2 * r.lx * (x - px) +  2 * r.ly * (y - py) +  2 * r.lz * (z - pz);
-		var c = (x * x + y * y + z * z) + (px * px + py * py + pz * pz) - 2 * (x * px + y * py + z * pz) - r2;
-
-		var d = b * b - 4 * a * c;
-		if( d < 0 )	return -1;
-
-		d = Math.sqrt(d);
-		var t = ( -b + d) / (2 * a);
-		return 1 - t;
+		var mx = r.px - x;
+		var my = r.py - y;
+		var mz = r.pz - z;
+		var b = mx * r.lx + my * r.ly + mz * r.lz;
+		var c = mx * mx + my * my + mz * mz - this.r * this.r;
+		if ( c > 0.0 && b > 0.0 )
+			return -1;
+		var d = b * b - c;
+		if ( d < 0.0 )
+			return -1;
+		var t = -b - Math.sqrt(d);
+		return t < 0.0 ? 0.0 : t;
 	}
 
 	public inline function inFrustum( f : Frustum, ?m : h3d.Matrix ) {
@@ -69,7 +66,7 @@ class Sphere extends Collider {
 		y = v.y;
 		z = v.z;
 		var scale = m.getScale();
-		r *= Math.max(Math.max(scale.x, scale.y), scale.z);
+		r *= Math.abs(Math.max(Math.max(scale.x, scale.y), scale.z));
 		var res = f.hasSphere(this);
 		x = oldX;
 		y = oldY;
@@ -101,12 +98,27 @@ class Sphere extends Collider {
 		return r;
 	}
 
+	public inline function closestPoint( p : h3d.col.Point ) {
+		var d = p.sub(getCenter()).normalized().scaled(r);
+		return d.add(getCenter());
+	}
+
+	public inline function clone() {
+		var s = new Sphere();
+		s.x = x;
+		s.y = y;
+		s.z = z;
+		s.r = r;
+		return s;
+	}
+
 	#if !macro
 	public function makeDebugObj() : h3d.scene.Object {
-		var prim = new h3d.prim.Sphere(r, 20, 15);
-		prim.translate(x, y, z);
-		prim.addNormals();
-		return new h3d.scene.Mesh(prim);
+		var prim = h3d.prim.Sphere.defaultUnitSphere();
+		var mesh = new h3d.scene.Mesh(prim);
+		mesh.scale(r);
+		mesh.setPosition(x,y,z);
+		return mesh;
 	}
 	#end
 

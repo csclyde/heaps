@@ -31,7 +31,6 @@ class Checker {
 	var curFun : TFunction;
 	var inLoop : Bool;
 	var inWhile : Bool;
-	var inCompute : Bool;
 	public var inits : Array<{ v : TVar, e : TExpr }>;
 
 	public function new() {
@@ -46,9 +45,11 @@ class Checker {
 		var genType = [TFloat, vec2, vec3, vec4];
 		var genIType = [TInt, ivec2, ivec3, ivec4];
 		var baseType = [TFloat, TBool, TInt];
+		var genSqMatType = [TMat2, TMat3, TMat4];
 		var genFloat = [for( t in genType ) { args : [ { name : "value", type : t } ], ret : t } ];
 		var genFloat2 = [for( t in genType ) { args : [ { name : "a", type : t }, { name : "b", type : t } ], ret : t } ];
 		var genWithFloat = [for( t in genType ) { args : [ { name : "a", type : t }, { name : "b", type : TFloat } ], ret : t } ];
+		var genSqMat = [for( t in genSqMatType ) { args : [ { name : "value", type : t } ], ret : t } ];
 		var texDefs = [
 			{ dim : T1D, arr : false, uv : TFloat, iuv : TInt },
 			{ dim : T2D, arr : false, uv : vec2, iuv : ivec2 },
@@ -77,6 +78,8 @@ class Checker {
 				genFloat;
 			case Cross:
 				[ { args : [ { name : "a", type : vec3 }, { name : "b", type : vec3 } ], ret : vec3 } ];
+			case Transpose:
+				genSqMat;
 			case Texture:
 				[for( t in texDefs ) { args : [{ name : "tex", type : TSampler(t.dim,t.arr) }, { name : "uv", type : t.uv }], ret : vec4 }];
 			case TextureLod:
@@ -107,6 +110,8 @@ class Checker {
 						r.push( { args : [ { name : "x", type : t }, { name : "y", type : t }, { name : "a", type : TFloat } ], ret : t } );
 				}
 				r;
+			case InvLerp:
+				[ { args : [{ name : "a", type : TFloat }, { name : "x", type : TFloat }, { name : "y", type : TFloat } ], ret : TFloat } ];
 			case Step:
 				var r = [];
 				for( t in genType ) {
@@ -173,7 +178,7 @@ class Checker {
 				[{ args : [{ name : "screenPos", type : vec2 }], ret : vec2 }];
 			case UvToScreen:
 				[{ args : [{ name : "uv", type : vec2 }], ret : vec2 }];
-			case Trace:
+			case Trace, GroupMemoryBarrier:
 				[];
 			case FloatBitsToInt, FloatBitsToUint:
 				[for( i => t in genType ) { args : [ { name: "x", type: t } ], ret: genIType[i] }];
@@ -189,6 +194,8 @@ class Checker {
 				[];
 			case VertexID, InstanceID, FragCoord, FrontFacing:
 				null;
+			case AtomicAdd:
+				[{ args : [{ name : "buf", type : TBuffer(TInt, SConst(0), RW) },{ name : "index", type : TInt }, { name : "data", type : TInt }], ret : TInt }];
 			case _ if( g.getName().indexOf("_") > 0 ):
 				var name = g.getName();
 				var idx = name.indexOf("_");
@@ -211,6 +218,10 @@ class Checker {
 				fname = fname.charAt(0).toLowerCase() + fname.substr(1);
 				vl.push({ name : fname, type : vt });
 				null;
+			case UnpackSnorm4x8:
+				[ { args : [ { name : "value", type : TInt } ], ret : vec4 } ];
+			case UnpackUnorm4x8:
+				[ { args : [ { name : "value", type : TInt } ], ret : vec4 } ];
 			default:
 				throw "Unsupported global "+g;
 			}
@@ -282,7 +293,6 @@ class Checker {
 			case "main": Main;
 			default: StringTools.startsWith(f.name,"__init__") ? Init : Helper;
 			}
-			inCompute = kind == Main;
 			if( args.length != 0 && kind != Helper )
 				error(kind+" function should have no argument", pos);
 			var fv : TVar = {
@@ -358,7 +368,7 @@ class Checker {
 	}
 
 	function tryUnify( t1 : Type, t2 : Type ) {
-		if( t1 == t2 )
+		if( t1.equals(t2) )
 			return true;
 		switch( [t1, t2] ) {
 		case [TVec(s1, t1), TVec(s2, t2)] if( s1 == s2 && t1 == t2 ):
@@ -408,7 +418,7 @@ class Checker {
 				return;
 			default:
 			}
-		case TSwiz(e, _):
+		case TSwiz(e, _), TField(e, _):
 			checkWrite(e);
 			return;
 		case TArray(e, _):
@@ -501,7 +511,7 @@ class Checker {
 			var v = vars.get(name);
 			if( v != null ) {
 				var canCall =  switch( name ) {
-				case "vertex", "fragment": false;
+				case "vertex", "fragment", "main": false;
 				default: !StringTools.startsWith(name,"__init__");
 				}
 				if( !canCall )
@@ -547,6 +557,30 @@ class Checker {
 				// not closure support
 				error("Global function must be called immediately", e.pos);
 			}
+		case ECall({ expr: EField({ expr: EIdent("Syntax") }, target) }, args):
+			if ( args.length == 0 )
+				error("Syntax." + target + " should have a string as first argument", e.pos);
+			var code = switch ( args[0].expr ) {
+				case EConst(CString(code)): code;
+				default: error("Syntax." + target + " should have a string as first argument", args[0].pos);
+			}
+			var sargs: Array<Ast.SyntaxArg> = [];
+			for ( i in 1...args.length ) {
+				var arg = args[i];
+				switch ( arg.expr ) {
+					case EMeta(flags = ("rw"|"r"|"w"), _, flaggedArg):
+						sargs.push({ e : typeExpr(flaggedArg, Value), access : switch( flags ) {
+								case "r": Read;
+								case "w": Write;
+								case "rw": ReadWrite;
+								default: throw "assert";
+							}
+						});
+					default:
+						error("Syntax." + target + " arguments should have an access meta of @r, @w or @rw", arg.pos);
+				}
+			}
+			return { e: TSyntax(target, code, sargs), t: TVoid, p: e.pos };
 		case ECall(e1, args):
 			function makeCall(e1) {
 				return switch( e1.t ) {
@@ -709,7 +743,7 @@ class Checker {
 			var e2 = typeExpr(e2, With(TInt));
 			unify(e2.t, TInt, e2.p);
 			switch( e1.t ) {
-			case TArray(t, size), TBuffer(t,size,_):
+			case TArray(t, size), TBuffer(t,size, Uniform), TBuffer(t,size, Partial):
 				switch( [size, e2.e] ) {
 				case [SConst(v), TConst(CInt(i))] if( i >= v ):
 					error("Indexing outside array bounds", e.pos);
@@ -718,12 +752,18 @@ class Checker {
 				default:
 				}
 				type = t;
+			case TBuffer(t, size, _):
+				type = t;
 			case TMat2:
 				type = vec2;
 			case TMat3:
 				type = vec3;
 			case TMat4, TMat3x4:
 				type = vec4;
+			case TVec(_, VFloat):
+				type = TFloat;
+			case TVec(_, VInt):
+				type = TInt;
 			default:
 				error("Cannot index " + e1.t.toString() + " : should be an array", e.pos);
 			}
@@ -790,10 +830,11 @@ class Checker {
 					einit = e;
 				}
 				if( v.type == null ) error("Type required for variable declaration", e.pos);
-				if( vars.exists(v.name) ) error("Duplicate var decl '" + v.name + "'", e.pos);
-				var v = makeVar(v, e.pos);
 				if( isImport && v.kind == Param )
 					continue;
+
+				if( vars.exists(v.name) ) error("Duplicate var decl '" + v.name + "'", e.pos);
+				var v = makeVar(v, e.pos);
 
 				switch( v.type ) {
 				case TSampler(T3D, true), TRWTexture(T3D, true, _), TRWTexture(_,_,3):
@@ -861,6 +902,7 @@ class Checker {
 			name : v.name,
 			kind : v.kind,
 			type : v.type,
+			qualifiers : v.qualifiers
 		};
 		if( parent != null )
 			tv.parent = parent;
@@ -919,6 +961,7 @@ class Checker {
 					default: error("Sampler should be on sampler type or sampler array", pos);
 					}
 				case Ignore, Doc(_):
+				case Flat: if( tv.kind != Local ) error("flat only allowed on local", pos);
 				}
 		}
 		if( tv.type != null )
@@ -1039,7 +1082,6 @@ class Checker {
 			}
 			if( gl != null ) {
 				if( f == "get" && inWhile ) error("Cannot use .get() in while loop, use .getLod instead", pos);
-				if( f == "get" && inCompute ) error("Cannot use .get() in a compute shader, use .getLod instead", pos);
 				g = globals.get(gl.toString());
 			}
 		}
@@ -1317,6 +1359,7 @@ class Checker {
 			case [_, TInt, TFloat]: toFloat(e1); TFloat;
 			case [_, TFloat, TInt]: toFloat(e2); TFloat;
 			case [_, TVec(a,VFloat), TVec(b,VFloat)] if( a == b ): TVec(a,VFloat);
+			case [_, TVec(a,VInt), TVec(b,VInt)] if( a == b ): TVec(a,VInt);
 			case [_, TFloat, TVec(_,VFloat)]: e2.t;
 			case [_, TVec(_,VFloat), TFloat]: e1.t;
 			case [_, TInt, TVec(_, VFloat)]: toFloat(e1); e2.t;

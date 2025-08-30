@@ -1,9 +1,10 @@
 package hxd.impl;
 import hxd.impl.Allocator;
 
+@:allow(hxd.impl.CacheAllocator)
 private class Cache<T> {
-	public var available : Array<T> = [];
-	public var disposed : Array<T> = [];
+	var available : Array<T> = [];
+	var disposed : Array<T> = [];
 	public var lastUse : Float = haxe.Timer.stamp();
 	public var onDispose : T -> Void;
 
@@ -33,7 +34,6 @@ private class Cache<T> {
 		if( b == null ) b = disposed.pop();
 		if( b == null ) return false;
 		if( onDispose != null ) onDispose(b);
-		lastUse += 1;
 		return true;
 	}
 }
@@ -55,7 +55,12 @@ class CacheAllocator extends Allocator {
 	public var maxKeepTime = 60.;
 
 	override function allocBuffer(vertices:Int, format:hxd.BufferFormat, flags:BufferFlags=Dynamic):h3d.Buffer {
-		if( vertices >= 65536 ) throw "assert";
+		if( vertices >= 65536 ) {
+			switch ( flags ) {
+			case UniformReadWrite:
+			default: throw "assert";
+			}
+		}
 		checkFrame();
 		var id = flags.toInt() | (format.uid << 3) | (vertices << 16);
 		var c = buffers.get(id);
@@ -81,8 +86,8 @@ class CacheAllocator extends Allocator {
 		checkGC();
 	}
 
-	override function allocIndexBuffer( count : Int ) {
-		var id = count;
+	override function allocIndexBuffer( count : Int, is32 : Bool = false ) {
+		var id = count << 1 + (is32 ? 1 : 0);
 		checkFrame();
 		var c = indexBuffers.get(id);
 		if( c != null ) {
@@ -90,12 +95,13 @@ class CacheAllocator extends Allocator {
 			if( i != null ) return i;
 		}
 		checkGC();
-		return super.allocIndexBuffer(count);
+		return super.allocIndexBuffer(count, is32);
 	}
 
 	override function disposeIndexBuffer( i : h3d.Indexes ) {
 		if( i.isDisposed() ) return;
-		var id = i.count;
+		var is32 = cast(i, h3d.Buffer).format.strideBytes == 4;
+		var id = i.count << 1 + (is32 ? 1 : 0);
 		var c = indexBuffers.get(id);
 		if( c == null ) {
 			c = new Cache(function(i:h3d.Indexes) i.dispose());

@@ -4,17 +4,29 @@ import hxd.fmt.fbx.BaseLibrary;
 import hxd.fmt.hmd.Data;
 import hxd.BufferFormat;
 
-class HMDOut extends BaseLibrary {
+typedef CollideParams = {
+	precision : Float,
+	maxSubdiv : Int,
+	maxConvexHulls : Int,
+}
 
+class HMDOut extends BaseLibrary {
 	var d : Data;
 	var dataOut : haxe.io.BytesOutput;
 	var filePath : String;
 	var tmp = haxe.io.Bytes.alloc(4);
+	var midsSortRemap : Map<Int, Int>;
 	public var absoluteTexturePath : Bool;
 	public var optimizeSkin = true;
+	public var optimizeMesh = false;
 	public var generateNormals = false;
 	public var generateTangents = false;
+	public var generateCollides : CollideParams;
+	public var modelCollides : Map<String, CollideParams> = [];
+	public var ignoreCollides : Array<String>;
+	var ignoreCollidesCache : Map<Int,Bool> = [];
 	public var lowPrecConfig : Map<String,Precision>;
+	public var lodsDecimation : Array<Float>;
 
 	function int32tof( v : Int ) : Float {
 		tmp.set(0, v & 0xFF);
@@ -33,6 +45,16 @@ class HMDOut extends BaseLibrary {
 		return true;
 	}
 
+	#if (sys || nodejs)
+	function tmpFile(name : String) {
+		var tmp = Sys.getEnv("TMPDIR");
+		if( tmp == null ) tmp = Sys.getEnv("TMP");
+		if( tmp == null ) tmp = Sys.getEnv("TEMP");
+		if( tmp == null ) tmp = ".";
+		return tmp+"/"+name+Date.now().getTime()+"_"+Std.random(0x1000000)+".bin";
+	}
+	#end
+
 	function buildTangents( geom : hxd.fmt.fbx.Geometry ) {
 		var verts = geom.getVertices();
 		var normals = geom.getNormals();
@@ -43,7 +65,7 @@ class HMDOut extends BaseLibrary {
 			throw "Need UVs to build tangents" + (geom.lib != null ? ' in ${geom.lib.fileName}' : '');
 
 		#if (hl && !hl_disable_mikkt)
-		var m = new hl.Format.Mikktspace();
+		var m = new hxd.tools.Mikktspace();
 		m.buffer = new hl.Bytes(8 * 4 * index.vidx.length);
 		m.stride = 8;
 		m.xPos = 0;
@@ -81,11 +103,7 @@ class HMDOut extends BaseLibrary {
 		m.compute();
 		return m.tangents;
 		#elseif (sys || nodejs)
-		var tmp = Sys.getEnv("TMPDIR");
-		if( tmp == null ) tmp = Sys.getEnv("TMP");
-		if( tmp == null ) tmp = Sys.getEnv("TEMP");
-		if( tmp == null ) tmp = ".";
-		var fileName = tmp+"/mikktspace_data"+Date.now().getTime()+"_"+Std.random(0x1000000)+".bin";
+		var fileName = tmpFile("mikktspace_data");
 		var outFile = fileName+".out";
 		var outputData = new haxe.io.BytesBuffer();
 		outputData.addInt32(index.vidx.length);
@@ -112,10 +130,10 @@ class HMDOut extends BaseLibrary {
 		for( i in 0...index.vidx.length )
 			outputData.addInt32(i);
 		sys.io.File.saveBytes(fileName, outputData.getBytes());
-		var ret = try Sys.command("mikktspace",[fileName,outFile]) catch( e : Dynamic ) -1;
+		var ret = try Sys.command("meshTools",["mikktspace",fileName,outFile]) catch( e : Dynamic ) -1;
 		if( ret != 0 ) {
 			sys.FileSystem.deleteFile(fileName);
-			throw "Failed to call 'mikktspace' executable required to generate tangent data. Please ensure it's in your PATH";
+			throw "Failed to call 'mikktspace' executable required to generate tangent data. Please ensure it's in your PATH"+(filePath == null ? "" : ' ($filePath)');
 		}
 		var bytes = sys.io.File.getBytes(outFile);
 		var size = index.vidx.length*4;
@@ -140,22 +158,34 @@ class HMDOut extends BaseLibrary {
 		}
 
 		var points : Array<h3d.col.Point> = [];
+		var psearch = new haxe.ds.Vector(1024);
+		inline function getPID(x:Float,y:Float,z:Float) {
+			return Std.int(((x + y + z) * 100) % 1024) & 1023;
+		}
 		var pmap = [];
 		for( vid in 0...g.vertexCount ) {
 			var x = vbuf[vid * stride];
 			var y = vbuf[vid * stride + 1];
 			var z = vbuf[vid * stride + 2];
+			var pid = getPID(x,y,z);
+			var indexes = psearch[pid];
 			var found = false;
-			for( i in 0...points.length ) {
-				var p = points[i];
+			if( indexes == null ) {
+				indexes = [];
+				psearch[pid] = indexes;
+			}
+			for( idx in indexes ) {
+				var p = points[idx];
 				if( p.x == x && p.y == y && p.z == z ) {
-					pmap[vid] = i;
+					pmap[vid] = idx;
 					found = true;
 					break;
 				}
 			}
 			if( !found ) {
-				pmap[vid] = points.length;
+				var idx = points.length;
+				pmap[vid] = idx;
+				indexes.push(idx);
 				points.push(new h3d.col.Point(x,y,z));
 			}
 		}
@@ -169,7 +199,6 @@ class HMDOut extends BaseLibrary {
 				realIdx.push(pmap[i]);
 		}
 
-
 		var poly = new h3d.prim.Polygon(points, realIdx);
 		poly.addNormals();
 
@@ -181,16 +210,16 @@ class HMDOut extends BaseLibrary {
 		}
 	}
 
-	inline function writePrec( v : Float, p : Precision ) {
+	public static inline function writePrec( d : haxe.io.BytesOutput, v : Float, p : Precision ) {
 		switch( p ) {
-		case F32: writeFloat(v);
-		case F16: dataOut.writeUInt16(hxd.BufferFormat.float32to16(v,true));
-		case S8: dataOut.writeByte(hxd.BufferFormat.float32toS8(v));
-		case U8: dataOut.writeByte(BufferFormat.float32toU8(v));
+		case F32: writeFloat(d, v);
+		case F16: d.writeUInt16(hxd.BufferFormat.float32to16(v,true));
+		case S8: d.writeByte(hxd.BufferFormat.float32toS8(v));
+		case U8: d.writeByte(BufferFormat.float32toU8(v));
 		}
 	}
 
-	inline function precisionSize(p:Precision) {
+	public static inline function precisionSize(p:Precision) {
 		return switch( p ) {
 		case F32: 4;
 		case F16: 2;
@@ -198,21 +227,109 @@ class HMDOut extends BaseLibrary {
 		}
 	}
 
-	inline function flushPrec( p : Precision, count : Int ) {
+	public static inline function flushPrec( d : haxe.io.BytesOutput, p : Precision, count : Int ) {
 		var b = (count * precisionSize(p)) & 3;
 		switch( b ) {
 		case 0:
 		case 1:
-			dataOut.writeUInt16(0);
-			dataOut.writeByte(0);
+			d.writeUInt16(0);
+			d.writeByte(0);
 		case 2:
-			dataOut.writeUInt16(0);
+			d.writeUInt16(0);
 		case 3:
-			dataOut.writeByte(0);
+			d.writeByte(0);
 		}
 	}
 
-	function buildGeom( geom : hxd.fmt.fbx.Geometry, skin : h3d.anim.Skin, dataOut : haxe.io.BytesOutput, genTangents : Bool ) {
+	public static function remapPrecision(inputName : String) {
+		if ( inputName == "tangent" )
+			return "normal";
+		if ( inputName.indexOf("uv") == 0 )
+			return "uv";
+		return inputName;
+	}
+
+	function optimize( vbuf : hxd.FloatBuffer, vertexFormat : hxd.BufferFormat, ibuf : Array<Int>, startIndex : Int, decimationFactor : Float ) {
+		var optimizedVbuf : hxd.FloatBuffer;
+		decimationFactor = hxd.Math.clamp(decimationFactor);
+
+		#if ( hl && hl_ver >= version("1.15.0") )
+		var vertexSize = vertexFormat.stride << 2;
+		var vertexCount = Std.int(vbuf.length / vertexFormat.stride);
+		var vertices = new hl.Bytes(vertexCount * vertexSize);
+		for ( i in 0...vbuf.length )
+			vertices.setF32(i << 2, cast(vbuf[i], Single));
+		var indexCount = ibuf.length;
+		var indices = new hl.Bytes(indexCount * 4);
+		for ( i => idx in ibuf )
+			indices.setI32(i << 2, idx);
+
+		var remap = new hl.Bytes(vertexCount * 4);
+		var uniqueVertexCount = hxd.tools.MeshOptimizer.generateVertexRemap(remap, indices, indexCount, vertices, vertexCount, vertexSize);
+		hxd.tools.MeshOptimizer.remapIndexBuffer(indices, indices, indexCount, remap);
+		hxd.tools.MeshOptimizer.remapVertexBuffer(vertices, vertices, vertexCount, vertexSize, remap);
+		vertexCount = uniqueVertexCount;
+		if ( decimationFactor > 0.0 )
+			indexCount = hxd.tools.MeshOptimizer.simplify(indices, indices, indexCount, vertices, vertexCount, vertexSize, Std.int(indexCount * (1.0 - decimationFactor)), 0.05, 0, null);
+		hxd.tools.MeshOptimizer.optimizeVertexCache(indices, indices, indexCount, vertexCount);
+		hxd.tools.MeshOptimizer.optimizeOverdraw(indices, indices, indexCount, vertices, vertexCount, vertexSize, 1.05);
+		vertexCount = hxd.tools.MeshOptimizer.optimizeVertexFetch(vertices, indices, indexCount, vertices, vertexCount, vertexSize);
+
+		optimizedVbuf = new hxd.FloatBuffer();
+		optimizedVbuf.resize(vertexCount * vertexFormat.stride);
+		for ( i in 0...vertexCount * vertexFormat.stride )
+			optimizedVbuf[i] = vertices.getF32(i << 2);
+		ibuf.resize(indexCount);
+		for ( i in 0...indexCount )
+			ibuf[i] = indices.getI32(i << 2) + startIndex;
+
+		#elseif (sys || nodejs)
+		var fileName = tmpFile("meshTools_data");
+		var outFile = fileName+".out";
+
+		var vertexSize = vertexFormat.stride << 2;
+		var vertexCount = Std.int(vbuf.length / vertexFormat.stride);
+
+		var outputData = new haxe.io.BytesBuffer();
+		outputData.addInt32(vertexCount);
+		outputData.addInt32(vertexSize);
+		for( v in vbuf )
+			outputData.addFloat(v);
+		var indexCount = ibuf.length;
+		outputData.addInt32(indexCount);
+		for( i in ibuf )
+			outputData.addInt32(i);
+		sys.io.File.saveBytes(fileName, outputData.getBytes());
+		var ret = if (decimationFactor > 0.0)
+			try Sys.command("meshTools",["simplify",fileName,outFile,'${Std.int(indexCount * (1.0 - decimationFactor))}','${decimationFactor}']) catch( e : Dynamic ) -1;
+		else
+			try Sys.command("meshTools",["optimize",fileName,outFile]) catch( e : Dynamic ) -1;
+
+		if( ret != 0 ) {
+			sys.FileSystem.deleteFile(fileName);
+			throw "Failed to call 'meshTools' executable required to generate optimized mesh. Please ensure it's in your PATH"+(filePath == null ? "" : ' ($filePath)');
+		}
+		var input = sys.io.File.getBytes(outFile);
+		var pos = 1;
+		vertexCount = input.getInt32(0);
+		optimizedVbuf = new hxd.FloatBuffer();
+		optimizedVbuf.resize(vertexCount * vertexFormat.stride);
+		for ( i in 0...vertexCount * vertexFormat.stride )
+			optimizedVbuf[i] = input.getFloat(4 * pos++);
+		indexCount = input.getInt32(4 * pos++);
+		ibuf.resize(indexCount);
+		for ( i in 0...indexCount )
+			ibuf[i] = input.getInt32(4 * pos++) + startIndex;
+		sys.FileSystem.deleteFile(fileName);
+		sys.FileSystem.deleteFile(outFile);
+		#else
+		optimizedVbuf = vbuf;
+		#end
+
+		return optimizedVbuf;
+	}
+
+	function buildGeom( geom : hxd.fmt.fbx.Geometry, skin : h3d.anim.Skin, dataOut : haxe.io.BytesOutput, genTangents : Bool, decimationFactor : Float = 0.0 ) {
 		var g = new Geometry();
 
 		var verts = geom.getVertices();
@@ -220,6 +337,7 @@ class HMDOut extends BaseLibrary {
 		var uvs = geom.getUVs();
 		var colors = geom.getColors();
 		var mats = geom.getMaterials();
+		var index = geom.getPolygons();
 
 		// remove empty color data
 		if( colors != null ) {
@@ -284,11 +402,20 @@ class HMDOut extends BaseLibrary {
 				ibufs.push([]);
 		}
 
+		var shapes = geom.getRoot().getAll("Shape");
+		var shapeIndexes = []; // Indexes of vertex used in blendshapes
+		var remappedShapes = [];
+		for ( sIdx => s in shapes ) {
+			shapeIndexes.push(s.get("Indexes").getInts());
+			remappedShapes.push([]);
+			for (i in 0...shapeIndexes[sIdx].length)
+				remappedShapes[remappedShapes.length - 1].push([]);
+		}
+
 		g.bounds = new h3d.col.Bounds();
 		var stride = g.vertexFormat.stride;
 		var tmpBuf = new hxd.impl.TypedArray.Float32Array(stride);
 		var vertexRemap = new Array<Int>();
-		var index = geom.getPolygons();
 		var count = 0, matPos = 0, stri = 0;
 		var lookup = new Map();
 		var tmp = new h3d.col.Point();
@@ -381,17 +508,26 @@ class HMDOut extends BaseLibrary {
 					vids = [];
 					lookup.set(itotal, vids);
 				}
-				for( vid in vids ) {
-					var same = true;
-					var p = vid * stride;
-					for( i in 0...stride )
-						if( vbuf[p++] != tmpBuf[i] ) {
-							same = false;
+				var inBlendShape = false;
+				for ( s in shapeIndexes ) {
+					if ( s.contains(vidx) ) {
+						inBlendShape = true;
+						break;
+					}
+				}
+				if ( !inBlendShape ) { // vertices referenced by blend shapes can't be merged
+					for( vid in vids ) {
+						var same = true;
+						var p = vid * stride;
+						for( i in 0...stride )
+							if( vbuf[p++] != tmpBuf[i] ) {
+								same = false;
+								break;
+							}
+						if( same ) {
+							found = vid;
 							break;
 						}
-					if( same ) {
-						found = vid;
-						break;
 					}
 				}
 				if( found == null ) {
@@ -401,7 +537,16 @@ class HMDOut extends BaseLibrary {
 						vbuf.push(tmpBuf[i]);
 					vids.push(found);
 				}
+
 				vertexRemap.push(found);
+
+				for ( s in 0...shapeIndexes.length ) {
+					for (idx in 0...shapeIndexes[s].length) {
+						if (shapeIndexes[s][idx] == vidx) {
+							remappedShapes[s][idx].push(found);
+						}
+					}
+				}
 			}
 
 			// by-skin-group index
@@ -419,7 +564,7 @@ class HMDOut extends BaseLibrary {
 				if( mats == null )
 					mid = 0;
 				else {
-					mid = mats[matPos];
+					mid = midsSortRemap != null ? midsSortRemap.get(mats[matPos]) : mats[matPos];
 					if( mats.length > 1 ) matPos++;
 				}
 				var idx = ibufs[mid];
@@ -441,53 +586,71 @@ class HMDOut extends BaseLibrary {
 		if( generateNormals )
 			updateNormals(g,vbuf,ibufs);
 
+		if ( optimizeMesh || decimationFactor > 0.0 ) {
+			var optimizedVbuf = new hxd.FloatBuffer();
+			for( idx in ibufs ) {
+				if ( idx == null )
+					continue;
+				var start = optimizedVbuf.length;
+				var buf = optimize(vbuf, g.vertexFormat, idx, Std.int(start / g.vertexFormat.stride), decimationFactor );
+				var length = buf.length;
+				optimizedVbuf.resize(start + length);
+				for ( i in 0...length )
+					optimizedVbuf[start + i] = buf[i];
+			}
+			vbuf = optimizedVbuf;
+			g.vertexCount = Std.int(optimizedVbuf.length / g.vertexFormat.stride);
+			if ( g.vertexCount == 0 )
+				return null;
+		}
+
 		// write data
 		g.vertexPosition = dataOut.length;
 		if( lowPrecConfig == null ) {
 			for( i in 0...vbuf.length )
-				writeFloat(vbuf[i]);
+				writeFloat(dataOut, vbuf[i]);
 		} else {
 			for( index in 0...Std.int(vbuf.length / stride) ) {
 				var i = index * stride;
-				writePrec(vbuf[i++], ppos);
-				writePrec(vbuf[i++], ppos);
-				writePrec(vbuf[i++], ppos);
-				flushPrec(ppos,3);
+				writePrec(dataOut, vbuf[i++], ppos);
+				writePrec(dataOut, vbuf[i++], ppos);
+				writePrec(dataOut, vbuf[i++], ppos);
+				flushPrec(dataOut, ppos,3);
 				if( normals != null ) {
-					writePrec(vbuf[i++], pnormal);
-					writePrec(vbuf[i++], pnormal);
-					writePrec(vbuf[i++], pnormal);
-					flushPrec(pnormal,3);
+					writePrec(dataOut, vbuf[i++], pnormal);
+					writePrec(dataOut, vbuf[i++], pnormal);
+					writePrec(dataOut, vbuf[i++], pnormal);
+					flushPrec(dataOut, pnormal,3);
 				}
 				if( tangents != null ) {
-					writePrec(vbuf[i++], pnormal);
-					writePrec(vbuf[i++], pnormal);
-					writePrec(vbuf[i++], pnormal);
-					flushPrec(pnormal,3);
+					writePrec(dataOut, vbuf[i++], pnormal);
+					writePrec(dataOut, vbuf[i++], pnormal);
+					writePrec(dataOut, vbuf[i++], pnormal);
+					flushPrec(dataOut, pnormal,3);
 				}
 				for( k in 0...uvs.length ) {
-					writePrec(vbuf[i++], puv);
-					writePrec(vbuf[i++], puv);
-					flushPrec(puv,2);
+					writePrec(dataOut, vbuf[i++], puv);
+					writePrec(dataOut, vbuf[i++], puv);
+					flushPrec(dataOut, puv,2);
 				}
 				if( colors != null ) {
-					writePrec(vbuf[i++], pcolor);
-					writePrec(vbuf[i++], pcolor);
-					writePrec(vbuf[i++], pcolor);
-					flushPrec(pcolor,3);
+					writePrec(dataOut, vbuf[i++], pcolor);
+					writePrec(dataOut, vbuf[i++], pcolor);
+					writePrec(dataOut, vbuf[i++], pcolor);
+					flushPrec(dataOut, pcolor,3);
 				}
 				if( skin != null ) {
-					writePrec(vbuf[i++], pweight);
-					writePrec(vbuf[i++], pweight);
-					writePrec(vbuf[i++], pweight);
-					flushPrec(pweight,3);
-					writeFloat(vbuf[i++]);
+					writePrec(dataOut, vbuf[i++], pweight);
+					writePrec(dataOut, vbuf[i++], pweight);
+					writePrec(dataOut, vbuf[i++], pweight);
+					flushPrec(dataOut, pweight,3);
+					writeFloat(dataOut, vbuf[i++]);
 				}
 				if( generateNormals ) {
-					writePrec(vbuf[i++], pnormal);
-					writePrec(vbuf[i++], pnormal);
-					writePrec(vbuf[i++], pnormal);
-					flushPrec(pnormal,3);
+					writePrec(dataOut, vbuf[i++], pnormal);
+					writePrec(dataOut, vbuf[i++], pnormal);
+					writePrec(dataOut, vbuf[i++], pnormal);
+					flushPrec(dataOut, pnormal,3);
 				}
 				if( i != (index + 1) * stride )
 					throw "assert";
@@ -518,7 +681,357 @@ class HMDOut extends BaseLibrary {
 		if( skin != null && skin.isSplit() )
 			matMap = null;
 
+		for ( i in 0...shapes.length ) {
+			var remapped = remappedShapes[i];
+			var s = shapes[i];
+			var shape = new BlendShape();
+			shape.name = s.props != null && s.props.length > 0 ? s.props[0].toString() : s.name;
+			shape.geom = -1;
+			var indexes = s.get("Indexes").getFloats();
+			var verts = s.get("Vertices").getFloats();
+			var normals = s.get("Normals").getFloats();
+			var uvs = s.get("UVs", true)?.getFloats();
+			var colors = s.get("Colors", true)?.getFloats();
+			format = [];
+			addFormat("position", DVec3, ppos);
+			if( normals != null )
+				addFormat("normal", DVec3, pnormal);
+			if( tangents != null )
+				addFormat("tangent", DVec3, pnormal);
+			if( uvs != null )
+				addFormat("uv", DVec2, puv);
+			if( colors != null )
+				addFormat("color", DVec3, pcolor);
+			shape.indexCount = remapped.length;
+			shape.vertexCount = indexes.length;
+			shape.vertexFormat = hxd.BufferFormat.make(format);
+			shape.vertexPosition = dataOut.length;
+
+			vbuf = new hxd.FloatBuffer();
+			for ( i in 0...shape.vertexCount ) {
+				vbuf.push(verts[i * 3]);
+				vbuf.push(verts[i * 3 + 1]);
+				vbuf.push(verts[i * 3 + 2]);
+				if ( normals != null ) {
+					vbuf.push(normals[i * 3]);
+					vbuf.push(normals[i * 3 + 1]);
+					vbuf.push(normals[i * 3 + 2]);
+				}
+				if ( uvs != null ) {
+					vbuf.push(uvs[i * 2]);
+					vbuf.push(uvs[i * 2 + 1]);
+				}
+				if ( colors != null ) {
+					vbuf.push(colors[i * 3]);
+					vbuf.push(colors[i * 3 + 1]);
+					vbuf.push(colors[i * 3 + 1]);
+				}
+			}
+			if( lowPrecConfig == null ) {
+				for( i in 0...vbuf.length )
+					writeFloat(dataOut, vbuf[i]);
+			} else {
+				for( index in 0...Std.int(vbuf.length / stride) ) {
+					var i = index * stride;
+					writePrec(dataOut, vbuf[i++], ppos);
+					writePrec(dataOut, vbuf[i++], ppos);
+					writePrec(dataOut, vbuf[i++], ppos);
+					flushPrec(dataOut, ppos,3);
+					if( normals != null ) {
+						writePrec(dataOut, vbuf[i++], pnormal);
+						writePrec(dataOut, vbuf[i++], pnormal);
+						writePrec(dataOut, vbuf[i++], pnormal);
+						flushPrec(dataOut, pnormal,3);
+					}
+					if( tangents != null ) {
+						writePrec(dataOut, vbuf[i++], pnormal);
+						writePrec(dataOut, vbuf[i++], pnormal);
+						writePrec(dataOut, vbuf[i++], pnormal);
+						flushPrec(dataOut, pnormal,3);
+					}
+					for( k in 0...uvs.length ) {
+						writePrec(dataOut, vbuf[i++], puv);
+						writePrec(dataOut, vbuf[i++], puv);
+						flushPrec(dataOut, puv,2);
+					}
+					if( colors != null ) {
+						writePrec(dataOut, vbuf[i++], pcolor);
+						writePrec(dataOut, vbuf[i++], pcolor);
+						writePrec(dataOut, vbuf[i++], pcolor);
+						flushPrec(dataOut, pcolor,3);
+					}
+					if( i != (index + 1) * stride )
+						throw "assert";
+				}
+			}
+
+			shape.remapPosition = dataOut.length;
+			for ( i in 0...remapped.length ) {
+				for (j in 0...remapped[i].length) {
+					var toWrite = remapped[i][j];
+
+					// We don't support models vertex count > 2^32 - 1 because we use
+					// the 32th bit for a flag to indicate that it is the last index
+					// affected by this offset
+					if (toWrite > Math.pow(2, 32) - 1)
+						throw ("Not supported, too much vertex");
+
+					if (j == remapped[i].length -1)
+						toWrite = toWrite | (1 << 31);
+
+					dataOut.writeInt32(toWrite);
+				}
+			}
+			d.shapes.push(shape);
+		}
 		return { g : g, materials : matMap };
+	}
+
+	function getLODInfos( modelName : String ) : { lodLevel : Int , modelName : String } {
+
+		var keyword = "LOD";
+		if ( modelName == null || modelName.length <= keyword.length )
+			return { lodLevel : -1, modelName : null };
+
+		// Test prefix
+		if ( modelName.substr(0, keyword.length) == keyword ) {
+			var parsedInt = Std.parseInt(modelName.charAt( keyword.length ));
+			if (parsedInt != null) {
+				if ( Std.parseInt( modelName.charAt( keyword.length + 1 ) ) != null )
+					throw 'Did not expect a second number after LOD in ${modelName}';
+				return { lodLevel : parsedInt, modelName : modelName.substr(keyword.length) };
+			}
+		}
+
+		// Test suffix
+		var maxCursor = modelName.length - keyword.length - 1;
+		if ( modelName.substr( maxCursor, keyword.length ) == keyword ) {
+			var parsedInt = Std.parseInt( modelName.charAt( modelName.length - 1) );
+			if ( parsedInt != null ) {
+				return { lodLevel : parsedInt, modelName : modelName.substr( 0, maxCursor ) };
+			}
+		}
+
+		return { lodLevel : -1, modelName : null };
+	}
+
+	function buildColliders(g : hxd.fmt.hmd.Data, model : Model, geom : hxd.fmt.fbx.Geometry, bounds : h3d.col.Bounds, generateCollides : Dynamic ) {
+		var maxConvexHulls = generateCollides.maxConvexHulls;
+		var dim = bounds.dimension();
+		var prec = Math.min(dim, generateCollides.precision);
+		var subdiv = Math.ceil(dim / prec);
+		subdiv = Math.imin(subdiv, generateCollides.maxSubdiv);
+		var maxResolution = subdiv * subdiv * subdiv;
+
+		var verts = geom.getVertices();
+		var index = geom.getPolygons();
+		var gm = geom.getGeomMatrix();
+		var mats = geom.getMaterials();
+
+		var vertexCount = Std.int(verts.length / 3);
+
+		var convexPoints : Array<Array<h3d.Vector>> = [];
+		var convexIndexes32 : Array<Array<Int>> = [];
+
+		function iterVertex(cb : Float -> Float -> Float -> Void) {
+			var tmp = new h3d.Vector();
+			for ( i in 0...Std.int(verts.length / 3) ) {
+				var x = verts[i*3];
+				var y = verts[i*3+1];
+				var z = verts[i*3+2];
+				if ( gm != null ) {
+					tmp.set(x, y, z);
+					tmp.transform(gm);
+					x = tmp.x;
+					y = tmp.y;
+					z = tmp.z;
+				}
+				cb(x, y, z);
+			}
+		}
+
+		function iterTriangle(cb : Int -> Void) {
+			inline function unpackIndex(i : Int) {
+				return i < 0 ? -i - 1 : i;
+			}
+			var triangleCount = 0;
+			for ( i in 0...Std.int(index.length / 3) ) {
+				var mat = (mats == null || i >= mats.length) ? 0 : mats[i];
+				if ( mat >= d.materials.length )
+					continue;
+				if( ignoreCollides != null ) {
+					var b = ignoreCollidesCache.get(mat);
+					if( b == null ) {
+						b = ignoreCollides.contains(d.materials[mat].name);
+						ignoreCollidesCache.set(mat, b);
+					}
+					if( b == true )
+						continue;
+				}
+				cb(unpackIndex(index[3*i]));
+				cb(unpackIndex(index[3*i+1]));
+				cb(unpackIndex(index[3*i+2]));
+				triangleCount++;
+			}
+			return triangleCount;
+		}
+
+		#if (hl && hl_ver >= version("1.15.0"))
+		var vertices = new hl.Bytes(verts.length * 3 * 4);
+		var i = 0;
+		iterVertex(function(x : Float, y : Float, z : Float) {
+			vertices.setF32(4 * i * 3, x);
+			vertices.setF32(4 * (i * 3 + 1), y);
+			vertices.setF32(4 * (i * 3 + 2), z);
+			i++;
+		});
+		var indexes = new hl.Bytes(index.length * 4);
+		var pos = 0;
+		var triangleCount = iterTriangle(function(index : Int) {
+			indexes.setI32(4 * pos++, index);
+		});
+		if ( triangleCount == 0 )
+			return null;
+
+		var startStamp = haxe.Timer.stamp();
+
+		var vhacdInstance = new hxd.tools.VHACD();
+		var params = new hxd.tools.VHACD.Parameters();
+		params.maxConvexHulls = maxConvexHulls;
+		params.maxResolution = maxResolution;
+		vhacdInstance.compute(vertices, vertexCount, indexes, triangleCount, params);
+		var convexHullCount = vhacdInstance.getConvexHullCount();
+		if ( convexHullCount == 0 )
+			return null;
+
+		var convexHull = new hxd.tools.VHACD.ConvexHull();
+		for ( i in 0...convexHullCount) {
+			vhacdInstance.getConvexHull(i, convexHull);
+			var pointCount = convexHull.pointCount;
+			var pos = 0;
+			var pointsBytes = convexHull.points;
+			var points = [];
+			for ( _ in 0...pointCount ) {
+				var x = pointsBytes.getF64(8*pos++);
+				var y = pointsBytes.getF64(8*pos++);
+				var z = pointsBytes.getF64(8*pos++);
+				points.push(new h3d.Vector(x, y, z));
+			}
+			convexPoints.push(points);
+
+			var triangleCount = convexHull.triangleCount;
+			var triangles = convexHull.triangles;
+			var pos = 0;
+			var indexes = [];
+			for ( _ in 0...triangleCount ) {
+				indexes.push(triangles.getI32(4*pos++));
+				indexes.push(triangles.getI32(4*pos++));
+				indexes.push(triangles.getI32(4*pos++));
+			}
+			convexIndexes32.push(indexes);
+		}
+		vhacdInstance.release();
+		#elseif (sys || nodejs)
+		var fileName = tmpFile("vhacd_data");
+		var outFile = fileName+".out";
+
+		var outputData = new haxe.io.BytesBuffer();
+		outputData.addInt32(vertexCount);
+		iterVertex(function(x : Float, y : Float, z : Float) {
+			outputData.addFloat(x);
+			outputData.addFloat(y);
+			outputData.addFloat(z);
+		});
+		var triangleCount = iterTriangle(function(_) {});
+		if ( triangleCount == 0 )
+			return null;
+
+		var startStamp = haxe.Timer.stamp();
+
+		outputData.addInt32(triangleCount);
+		iterTriangle(function(index : Int) {
+			outputData.addInt32(index);
+		});
+		sys.io.File.saveBytes(fileName, outputData.getBytes());
+		var ret = try Sys.command("meshTools",["vhacd",fileName,outFile,'$maxConvexHulls','$maxResolution']) catch( e : Dynamic ) -1;
+		if( ret != 0 ) {
+			sys.FileSystem.deleteFile(fileName);
+			throw "Failed to call 'vhacd' executable required to generate collision data. Please ensure it's in your PATH"+(filePath == null ? "" : ' ($filePath)');
+		}
+		var bytes = sys.io.File.getBytes(outFile);
+
+		var i = 0;
+		var convexHullCount = bytes.getInt32(i++<<2);
+		for ( _ in 0...convexHullCount ) {
+			var pointCount = bytes.getInt32(i++<<2);
+			var points = [];
+			for ( _ in 0...pointCount ) {
+				var x = bytes.getDouble(i<<2);
+				i += 2;
+				var y = bytes.getDouble(i<<2);
+				i += 2;
+				var z = bytes.getDouble(i<<2);
+				i += 2;
+				var point = new h3d.Vector(x, y, z);
+				points.push(point);
+			}
+			convexPoints.push(points);
+
+			var triangleCount = bytes.getInt32(i++<<2);
+			var indexes = [];
+			for ( _ in 0...triangleCount ) {
+				indexes.push(bytes.getInt32(i++<<2));
+				indexes.push(bytes.getInt32(i++<<2));
+				indexes.push(bytes.getInt32(i++<<2));
+			}
+			convexIndexes32.push(indexes);
+		}
+
+		sys.FileSystem.deleteFile(fileName);
+		sys.FileSystem.deleteFile(outFile);
+		#end
+
+		var collider = new Collider();
+		collider.vertexCounts = [];
+		collider.indexCounts = [];
+		var is32 = [];
+
+		collider.vertexPosition = dataOut.length;
+		for ( i in 0...convexPoints.length ) {
+			var points = convexPoints[i];
+			var indexes = convexIndexes32[i];
+			for ( p in points ) {
+				dataOut.writeFloat(p.x);
+				dataOut.writeFloat(p.y);
+				dataOut.writeFloat(p.z);
+			}
+
+			collider.vertexCounts.push(points.length);
+			collider.indexCounts.push(indexes.length);
+
+			is32.push(points.length > 0x10000);
+		}
+
+		collider.indexPosition = dataOut.length;
+		for ( i => indexes in convexIndexes32 ) {
+			var is32 = is32[i];
+			if( is32 ) {
+				for( i in indexes )
+					dataOut.writeInt32(i);
+			} else {
+				for( i in indexes )
+					dataOut.writeUInt16(i);
+			}
+		}
+
+		if ( d.colliders == null )
+			d.colliders = [];
+		model.collider = d.colliders.length;
+		if( model.props == null ) model.props = [];
+		model.props.push(HasCollider);
+		d.colliders.push(collider);
+
+		return collider;
 	}
 
 	function addModels(includeGeometry) {
@@ -633,6 +1146,7 @@ class HMDOut extends BaseLibrary {
 
 		var hgeom = new Map();
 		var hmat = new Map<Int,Int>();
+		var hlods = new Map<String, Array<Index<Model>>>();
 		var index = 0;
 		for( o in objects ) {
 
@@ -767,17 +1281,39 @@ class HMDOut extends BaseLibrary {
 				model.skin = makeSkin(skin, o.skin);
 			}
 
+			// Reorder materials to unsure there are in the same order for lods
+			var lodsInfos = getLODInfos(model.name);
+			if (lodsInfos.lodLevel != -1) {
+				midsSortRemap = new Map<Int, Int>();
+				var start = d.materials.length - mids.length;
+				for (idx in 0...mids.length) {
+					midsSortRemap.set(idx, mids[idx]);
+					if (idx + start < 0)
+						continue;
+					mids[idx + start] = start + idx;
+				}
+			}
+
 			var gdata = hgeom.get(g.getId());
 			if( gdata == null ) {
-				var geom =
-				// try {
-					buildGeom(new hxd.fmt.fbx.Geometry(this, g), skin, dataOut, hasNormalMap || generateTangents);
-				// } catch ( e : Dynamic ) {
-				// 		throw e + " in " + model.name;
-				// }
+				var geomData = new hxd.fmt.fbx.Geometry(this, g);
+
+				var geom = buildGeom(geomData, skin, dataOut, hasNormalMap || generateTangents);
+
+				if ( lodsInfos.lodLevel <= 0 ) {
+					var mname = model.getObjectName();
+					var collidersParams = modelCollides.exists(mname) ? modelCollides.get(mname) : generateCollides;
+					if ( collidersParams != null )
+						buildColliders(d, model, geomData, geom.g.bounds, collidersParams);
+				}
+
 				gdata = { gid : d.geometries.length, materials : geom.materials };
 				d.geometries.push(geom.g);
 				hgeom.set(g.getId(), gdata);
+				for ( s in d.shapes ) {
+					if (s.geom == -1)
+						s.geom = gdata.gid;
+				}
 			}
 			model.geometry = gdata.gid;
 
@@ -793,6 +1329,54 @@ class HMDOut extends BaseLibrary {
 				model.materials = mids;
 			else
 				model.materials = [for( id in gdata.materials ) mids[id]];
+
+			var lodsInfos = getLODInfos(model.name);
+			var lodIndex = lodsInfos.lodLevel;
+			var key = lodsInfos.modelName;
+			if ( lodIndex >= 0 ) {
+				var lods = hlods.get(key);
+				if ( lods == null ) {
+					lods = [];
+					hlods.set(key, lods);
+				}
+				if ( lodIndex > 0 ) {
+					lods[lodIndex - 1] = d.models.length-1;
+					model.lods = [];
+				} else {
+					model.lods = lods;
+				}
+				if( model.props == null ) model.props = [];
+				model.props.push(HasLod);
+			} else if ( lodsDecimation != null && model.skin == null ) {
+				var modelName = model.name;
+				model.name = model.toLODName(0);
+				if( model.props == null ) model.props = [];
+				model.props.push(HasLod);
+				model.lods = [];
+				for ( i => lods in lodsDecimation ) {
+					var geom = buildGeom(new hxd.fmt.fbx.Geometry(this, g), skin, dataOut, hasNormalMap || generateTangents, lods);
+					if ( geom == null )
+						continue;
+					var lodModel = new Model();
+					lodModel.name = modelName + 'LOD${i+1}';
+					lodModel.props = model.props != null ? model.props.copy() : null;
+					if ( lodModel.props != null ) {
+						lodModel.props.remove(HasCollider);
+						if ( lodModel.props.length == 0 )
+							lodModel.props = [];
+					}
+					lodModel.parent = model.parent;
+					lodModel.follow = model.follow;
+					lodModel.position = model.position;
+					lodModel.materials = model.materials;
+					lodModel.skin = model.skin;
+					lodModel.lods = [];
+					lodModel.geometry = d.geometries.length;
+					d.geometries.push(geom.g);
+					model.lods.push(d.models.length);
+					d.models.push(lodModel);
+				}
+			}
 		}
 	}
 
@@ -876,8 +1460,8 @@ class HMDOut extends BaseLibrary {
 		return p;
 	}
 
-	inline function writeFloat( f : Float ) {
-		dataOut.writeFloat( f == 0 ? 0 : f ); // prevent negative zero
+	public static inline function writeFloat(d : haxe.io.BytesOutput, f : Float ) {
+		d.writeFloat( f == 0 ? 0 : f ); // prevent negative zero
 	}
 
 	function writeFrame( o : h3d.anim.LinearAnimation.LinearObject, fid : Int ) {
@@ -885,31 +1469,31 @@ class HMDOut extends BaseLibrary {
 		if( o.frames != null ) {
 			var f = o.frames[fid];
 			if( o.hasPosition ) {
-				writeFloat(f.tx);
-				writeFloat(f.ty);
-				writeFloat(f.tz);
+				writeFloat(dataOut, f.tx);
+				writeFloat(dataOut, f.ty);
+				writeFloat(dataOut, f.tz);
 			}
 			if( o.hasRotation ) {
 				var ql = Math.sqrt(f.qx * f.qx + f.qy * f.qy + f.qz * f.qz + f.qw * f.qw);
 				if( ql * f.qw < 0 ) ql = -ql; // make sure normalized qw > 0
-				writeFloat(round(f.qx / ql));
-				writeFloat(round(f.qy / ql));
-				writeFloat(round(f.qz / ql));
+				writeFloat(dataOut, round(f.qx / ql));
+				writeFloat(dataOut, round(f.qy / ql));
+				writeFloat(dataOut, round(f.qz / ql));
 			}
 			if( o.hasScale ) {
-				writeFloat(f.sx);
-				writeFloat(f.sy);
-				writeFloat(f.sz);
+				writeFloat(dataOut, f.sx);
+				writeFloat(dataOut, f.sy);
+				writeFloat(dataOut, f.sz);
 			}
 		}
 		if( o.uvs != null ) {
-			writeFloat(o.uvs[fid<<1]);
-			writeFloat(o.uvs[(fid<<1)+1]);
+			writeFloat(dataOut, o.uvs[fid<<1]);
+			writeFloat(dataOut, o.uvs[(fid<<1)+1]);
 		}
 		if( o.alphas != null )
-			writeFloat(o.alphas[fid]);
+			writeFloat(dataOut, o.alphas[fid]);
 		if( o.propValues != null )
-			writeFloat(o.propValues[fid]);
+			writeFloat(dataOut, o.propValues[fid]);
 	}
 
 	function makeAnimation( anim : h3d.anim.Animation ) {
@@ -944,21 +1528,21 @@ class HMDOut extends BaseLibrary {
 				if( d.version < 3 ) {
 					for( f in obj.frames ) {
 						if( o.flags.has(HasPosition) ) {
-							writeFloat(f.tx);
-							writeFloat(f.ty);
-							writeFloat(f.tz);
+							writeFloat(dataOut, f.tx);
+							writeFloat(dataOut, f.ty);
+							writeFloat(dataOut, f.tz);
 						}
 						if( o.flags.has(HasRotation) ) {
 							var ql = Math.sqrt(f.qx * f.qx + f.qy * f.qy + f.qz * f.qz + f.qw * f.qw);
 							if( f.qw < 0 ) ql = -ql;
-							writeFloat(round(f.qx / ql));
-							writeFloat(round(f.qy / ql));
-							writeFloat(round(f.qz / ql));
+							writeFloat(dataOut, round(f.qx / ql));
+							writeFloat(dataOut, round(f.qy / ql));
+							writeFloat(dataOut, round(f.qz / ql));
 						}
 						if( o.flags.has(HasScale) ) {
-							writeFloat(f.sx);
-							writeFloat(f.sy);
-							writeFloat(f.sz);
+							writeFloat(dataOut, f.sx);
+							writeFloat(dataOut, f.sy);
+							writeFloat(dataOut, f.sz);
 						}
 					}
 				}
@@ -968,14 +1552,14 @@ class HMDOut extends BaseLibrary {
 				if( count == 0 ) count = obj.uvs.length>>1 else if( count != obj.uvs.length>>1 ) throw "assert";
 				if( d.version < 3 )
 					for( f in obj.uvs )
-						writeFloat(f);
+						writeFloat(dataOut, f);
 				}
 			if( obj.alphas != null ) {
 				o.flags.set(HasAlpha);
 				if( count == 0 ) count = obj.alphas.length else if( count != obj.alphas.length ) throw "assert";
 				if( d.version < 3 )
 					for( f in obj.alphas )
-						writeFloat(f);
+						writeFloat(dataOut, f);
 			}
 			if( obj.propValues != null ) {
 				o.flags.set(HasProps);
@@ -983,7 +1567,7 @@ class HMDOut extends BaseLibrary {
 				if( count == 0 ) count = obj.propValues.length else if( count != obj.propValues.length ) throw "assert";
 				if( d.version < 3 )
 					for( f in obj.propValues )
-						writeFloat(f);
+						writeFloat(dataOut, f);
 			}
 			if( count == 0 )
 				throw "assert"; // no data ?
@@ -1029,6 +1613,7 @@ class HMDOut extends BaseLibrary {
 		d.materials = [];
 		d.models = [];
 		d.animations = [];
+		d.shapes = [];
 
 		dataOut = new haxe.io.BytesOutput();
 

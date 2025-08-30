@@ -271,7 +271,7 @@ class BaseLibrary {
 
 		// scale on geometry
 		if( geometryScaleFactor != 1 ) {
-			for( g in this.root.getAll("Objects.Geometry.Vertices") ) {
+			for( g in this.root.getAll("Objects.Geometry.Vertices").concat(this.root.getAll("Objects.Geometry.Shape.Vertices")) ) {
 				var v = toFloats(g);
 				for( i in 0...v.length )
 					v[i] = v[i] / geometryScaleFactor;
@@ -292,6 +292,11 @@ class BaseLibrary {
 						p.props[idx] = PFloat(v * scaleFactor);
 					}
 				case "Lcl Translation", "GeometricTranslation" if( !isRoot ):
+					for( idx in [4,5,6] ) {
+						var v = p.props[idx].toFloat();
+						p.props[idx] = PFloat(v / scaleFactor);
+					}
+				case "GeometricTranslation":
 					for( idx in [4,5,6] ) {
 						var v = p.props[idx].toFloat();
 						p.props[idx] = PFloat(v / scaleFactor);
@@ -402,9 +407,15 @@ class BaseLibrary {
 				convertPoints(v.getFloats());
 			for( v in g.getAll("LayerElementNormal.Normals") )
 				convertPoints(v.getFloats());
-			for( v in g.getAll("LayerElementTangent.Tangents") )
+		}
+		for ( s in root.getAll("Objects.Geometry.Shape") ) {
+			for ( v in s.getAll("Vertices") )
 				convertPoints(v.getFloats());
-			for( v in g.getAll("LayerElementBinormal.Binormals") )
+			for ( v in s.getAll("Normals") )
+				convertPoints(v.getFloats());
+			for ( v in s.getAll("Tangents") )
+				convertPoints(v.getFloats());
+			for ( v in s.getAll("Binormals") )
 				convertPoints(v.getFloats());
 		}
 	}
@@ -1390,8 +1401,8 @@ class BaseLibrary {
 	}
 
 	function round(v:Float) {
-		if( v != v ) throw "NaN found (could be multiple skin mesh, currently not supported)";
-		return highPrecision ? v : std.Math.fround(v * 131072) / 131072;
+		if( v != v ) throw '${fileName} : NaN found (could be multiple skin mesh, currently not supported)';
+		return highPrecision ? v : hxd.Math.fround(v * 131072) / 131072;
 	}
 
 	function updateDefaultMatrix( model : FbxNode, d : DefaultMatrixes ) {

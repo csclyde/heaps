@@ -2,7 +2,7 @@ package h3d;
 using hxd.Math;
 
 /**
-	A 4 floats vector. Everytime a Vector is returned, it means a copy is created.
+	A 3 floats vector. Everytime a Vector is returned, it means a copy is created.
 **/
 class VectorImpl #if apicheck implements h2d.impl.PointApi<Vector,Matrix> #end {
 
@@ -38,7 +38,6 @@ class VectorImpl #if apicheck implements h2d.impl.PointApi<Vector,Matrix> #end {
 	}
 
 	public inline function scaled( v : Float ) {
-		// see scale
 		return new Vector(x * v, y * v, z * v);
 	}
 
@@ -109,10 +108,6 @@ class VectorImpl #if apicheck implements h2d.impl.PointApi<Vector,Matrix> #end {
 	}
 
 	public inline function scale( f : Float ) {
-		/*
-			The scale of a vector represents its length and thus
-			only x/y/z should be affected by scaling
-		*/
 		x *= f;
 		y *= f;
 		z *= f;
@@ -162,6 +157,10 @@ class VectorImpl #if apicheck implements h2d.impl.PointApi<Vector,Matrix> #end {
 
 	public inline function toVector4() {
 		return new h3d.Vector4(x,y,z);
+	}
+
+	public inline function to2D() {
+		return new h2d.col.Point(x,y);
 	}
 
 	public function toString() {
@@ -265,14 +264,34 @@ class VectorImpl #if apicheck implements h2d.impl.PointApi<Vector,Matrix> #end {
 		return new h3d.Vector(h, s, l);
 	}
 
+	public function toColorHSV() {
+	    var max = hxd.Math.max(hxd.Math.max(r, g), b);
+		var min = hxd.Math.min(hxd.Math.min(r, g), b);
+		var h, s, v = max;
+
+		if(max == min)
+			h = s = 0.0; // achromatic
+		else {
+			var d = max - min;
+			s = (max + min) > 1.0 ? d / (2 - max - min) : d / (max + min);
+			if(max == r)
+				h = (g - b) / d + (g < b ? 6.0 : 0.0);
+			else if(max == g)
+				h = (b - r) / d + 2.0;
+			else
+				h = (r - g) / d + 4.0;
+			h *= Math.PI / 3.0;
+		}
+
+		return new h3d.Vector(h, s, v);
+	}
+
 }
 
 
 
 /**
-	A 4 floats vector. Everytime a Vector is returned, it means a copy is created.
-	For function manipulating the length (length, normalize, dot, scale, etc.), the Vector
-	acts like a Point in the sense only the X/Y/Z components will be affected.
+	A 3 floats vector. Everytime a Vector is returned, it means a copy is created.
 **/
 @:forward abstract Vector(VectorImpl) from VectorImpl to VectorImpl {
 

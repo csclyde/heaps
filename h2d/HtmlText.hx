@@ -66,6 +66,15 @@ class HtmlText extends Text {
 		return text;
 	}
 
+	static var defaultHtmlTags : Map<String,{color:Int,font:String}>;
+	/**
+		Associate a custom html tag to a specific font and color.
+	**/
+	public static function defineDefaultHtmlTag( name : String, ?fontColor : Int, ?fontName : String ) {
+		if( defaultHtmlTags == null ) defaultHtmlTags = [];
+		defaultHtmlTags.set(name,{color:fontColor,font:fontName});
+	}
+
 	/**
 		When enabled, condenses extra spaces (carriage-return, line-feed, tabulation and space character) to one space.
 		If not set, uncondensed whitespace is left as is, as well as line-breaks.
@@ -105,6 +114,7 @@ class HtmlText extends Text {
 	var newLine : Bool;
 	var aHrefs : Array<String>;
 	var aInteractive : Interactive;
+	var htmlTags : Map<String,{?color:Int,?font:String}>;
 
 	override function draw(ctx:RenderContext) {
 		if( dropShadow != null ) {
@@ -193,6 +203,31 @@ class HtmlText extends Text {
 		return defaultFormatText(text);
 	}
 
+	/**
+		Define a custom html tag to be displayed with specific font and color.
+	**/
+	public function defineHtmlTag( name : String, ?fontColor : Int, ?fontName : String ) {
+		if( htmlTags == null ) htmlTags = [];
+		htmlTags.set(name,{color:fontColor,font:fontName});
+		rebuild();
+	}
+
+	/**
+		Define or reset a set of custom html tags to be displayed with specific font and color.
+	**/
+	public function defineHtmlTags( tags : Array<{ name : String, ?color : Int, ?font : String }> ) {
+		if( tags == null ) {
+			if( htmlTags == null )
+				return;
+			htmlTags = null;
+		} else {
+			htmlTags = [];
+			for( t in tags )
+				htmlTags.set(t.name,{color:t.color,font:t.font});
+		}
+		rebuild();
+	}
+
 	override function set_text(t : String) {
 		super.set_text(formatText(t));
 		return t;
@@ -202,8 +237,8 @@ class HtmlText extends Text {
 		return try Xml.parse(text) catch( e : Dynamic ) throw "Could not parse " + text + " (" + e +")";
 	}
 
-	inline function makeLineInfo( width : Float, height : Float, baseLine : Float ) : LineInfo {
-		return { width: width, height: height, baseLine: baseLine };
+	inline function makeLineInfo( width : Float, height : Float, baseLine : Float, offset = 0. ) : LineInfo {
+		return { width: width, height: height, baseLine: baseLine, baseLineOffset : offset };
 	}
 
 	override function validateText() {
@@ -211,21 +246,36 @@ class HtmlText extends Text {
 		validateNodes(textXml);
 	}
 
+	function resolveHtmlTag( name : String ) {
+		if( htmlTags != null ) {
+			var t = htmlTags.get(name);
+			if( t != null ) return t;
+		}
+		if( defaultHtmlTags != null ) {
+			var t = defaultHtmlTags.get(name);
+			if( t != null ) return t;
+		}
+		return null;
+	}
+
 	function validateNodes( xml : Xml ) {
 		switch( xml.nodeType ) {
 		case Element:
 			var nodeName = xml.nodeName.toLowerCase();
-			switch ( nodeName ) {
-				case "img":
-					loadImage(xml.get("src"));
-				case "font":
-					if (xml.exists("face")) {
-						loadFont(xml.get("face"));
-					}
-				case "b", "bold":
-					loadFont("bold");
-				case "i", "italic":
-					loadFont("italic");
+			var t = resolveHtmlTag(nodeName);
+			if( t?.font != null ) loadFont(t.font);
+			switch( nodeName ) {
+			case "img":
+				loadImage(xml.get("src"));
+			case "font":
+				if (xml.exists("face")) {
+					loadFont(xml.get("face"));
+				}
+			case "b", "bold":
+				if( t?.font == null ) loadFont("bold");
+			case "i", "italic":
+				if( t?.font == null ) loadFont("italic");
+			default:
 			}
 			for( child in xml )
 				validateNodes(child);
@@ -262,7 +312,7 @@ class HtmlText extends Text {
 		newLine = true;
 		var splitNode : SplitNode = {
 			node: null, pos: 0, font: font, prevChar: -1,
-			width: 0, height: 0, baseLine: 0
+			width: 0, height: 0, baseLine: 0, baseLineOffset: 0,
 		};
 		for( e in doc )
 			buildSizes(e, font, metrics, splitNode);
@@ -286,8 +336,8 @@ class HtmlText extends Text {
 		var y = yPos;
 		calcXMin = xMin;
 		calcWidth = xMax - xMin;
-		calcHeight = y + metrics[sizePos].height;
-		calcSizeHeight = y + metrics[sizePos].baseLine;//(font.baseLine > 0 ? font.baseLine : font.lineHeight);
+		calcHeight = y + metrics[sizePos].height - calcYMin;
+		calcSizeHeight = y + metrics[sizePos].baseLine;
 		calcDone = true;
 		if ( rebuild ) needsRebuild = false;
 	}
@@ -298,12 +348,13 @@ class HtmlText extends Text {
 			var str = splitNode.node.nodeValue;
 			var info = metrics[metrics.length - 1];
 			var w = info.width;
-			var cc = str.charCodeAt(splitNode.pos);
+			var cc = StringTools.fastCodeAt(str, splitNode.pos);
 			// Restore line metrics to ones before split.
 			// Potential bug: `Text<split> [Image] text<split>text` - third line will use metrics as if image is present in the line.
 			info.width = splitNode.width;
 			info.height = splitNode.height;
 			info.baseLine = splitNode.baseLine;
+			info.baseLineOffset = splitNode.baseLineOffset;
  			var char = fnt.getChar(cc);
 			if (lineBreak && fnt.charset.isSpace(cc)) {
 				// Space characters are converted to \n
@@ -330,6 +381,9 @@ class HtmlText extends Text {
 			}
 
 			var nodeName = e.nodeName.toLowerCase();
+			var tag = resolveHtmlTag(nodeName);
+			if( tag?.font != null )
+				font = loadFont(tag.font);
 			switch( nodeName ) {
 			case "p":
 				if ( !newLine ) {
@@ -355,34 +409,33 @@ class HtmlText extends Text {
 								var grow = i.height - i.dy - info.baseLine;
 								var h = info.height;
 								var bl = info.baseLine;
+								var offset = info.baseLineOffset;
 								if (grow > 0) {
 									h += grow;
 									bl += grow;
 								}
-								metrics.push(makeLineInfo(size, Math.max(h, bl + i.dy), bl));
+								metrics.push(makeLineInfo(size, Math.max(h, bl + i.dy), bl, offset));
 							default:
-								metrics.push(makeLineInfo(size, info.height, info.baseLine));
+								metrics.push(makeLineInfo(size, info.height, info.baseLine, info.baseLineOffset));
 						}
 					}
 				} else {
 					var info = metrics[metrics.length - 1];
 					info.width = size;
-					if ( lineHeightMode == Accurate ) {
-						var grow = i.height - i.dy - info.baseLine;
-						if(grow > 0) {
-							switch(imageVerticalAlign) {
-								case Top:
-									info.height += grow;
-								case Bottom:
-									info.baseLine += grow;
-									info.height += grow;
-								case Middle:
-									info.height += grow;
-									info.baseLine += Std.int(grow/2);
+					if( lineHeightMode == Accurate ) {
+						var grow = (i.height - i.dy) - info.height;
+						if( grow > 0 ) {
+							info.height += grow;
+							if( imageVerticalAlign == Middle ) {
+								info.baseLine += grow * 0.5;
+								info.baseLineOffset += grow * 0.5;
 							}
 						}
-						grow = info.baseLine + i.dy;
-						if ( info.height < grow ) info.height = grow;
+						if( imageVerticalAlign == Bottom ) {
+							var grow = (i.height - i.dy) - info.baseLine;
+							if(grow > 0)
+								info.baseLine += grow;
+						}
 					}
 				}
 				newLine = false;
@@ -396,9 +449,11 @@ class HtmlText extends Text {
 					}
 				}
 			case "b", "bold":
-				font = loadFont("bold");
+				if( tag?.font == null )
+					font = loadFont("bold");
 			case "i", "italic":
-				font = loadFont("italic");
+				if( tag?.font == null )
+					font = loadFont("italic");
 			default:
 			}
 			for( child in e )
@@ -421,15 +476,15 @@ class HtmlText extends Text {
 			var x = leftMargin;
 			var breakChars = 0;
 			for ( i in 0...text.length ) {
-				var cc = text.charCodeAt(i);
+				var cc = StringTools.fastCodeAt(text, i);
 				var g = font.getChar(cc);
 				var newline = cc == '\n'.code;
 				var esize = g.width + g.getKerningOffset(prevChar);
-				var nc = text.charCodeAt(i+1);
-				if ( font.charset.isBreakChar(cc) && (nc == null || !font.charset.isComplementChar(nc) )) {
+				var isComplement = (i < text.length - 1 && font.charset.isComplementChar(StringTools.fastCodeAt(text, i + 1)));
+				if ( font.charset.isBreakChar(cc) && !isComplement) {
 					// Case: Very first word in text makes the line too long hence we want to start it off on a new line.
 					if (x > maxWidth && textSplit.length == 0 && splitNode.node != null) {
-						metrics.push(makeLineInfo(x, info.height, info.baseLine));
+						metrics.push(makeLineInfo(x, info.height, info.baseLine, info.baseLineOffset));
 						x = wordSplit();
 					}
 
@@ -437,13 +492,17 @@ class HtmlText extends Text {
 					var k = i + 1, max = text.length;
 					var prevChar = cc;
 					while ( size <= maxWidth && k < max ) {
-						var cc = text.charCodeAt(k++);
+						var cc = StringTools.fastCodeAt(text, k++);
 						if ( lineBreak && (font.charset.isSpace(cc) || cc == '\n'.code ) ) break;
 						var e = font.getChar(cc);
 						size += e.width + letterSpacing + e.getKerningOffset(prevChar);
 						prevChar = cc;
-						var nc = text.charCodeAt(k);
-						if ( font.charset.isBreakChar(cc) && (nc == null || !font.charset.isComplementChar(nc)) ) break;
+						if ( font.charset.isBreakChar(cc) ) {
+							if ( k >= text.length )
+								break;
+							var nc = StringTools.fastCodeAt(text, k);
+							if ( !font.charset.isComplementChar(nc) ) break;
+						}
 					}
 					// Avoid empty line when last char causes line-break while being CJK
 					if ( lineBreak && size > maxWidth && i != max - 1 ) {
@@ -465,13 +524,14 @@ class HtmlText extends Text {
 						splitNode.width = x;
 						splitNode.height = info.height;
 						splitNode.baseLine = info.baseLine;
+						splitNode.baseLineOffset = info.baseLineOffset;
 						splitNode.font = font;
 					}
 				}
 				if ( g != null && cc != '\n'.code )
 					x += esize + letterSpacing;
 				if ( newline ) {
-					metrics.push(makeLineInfo(x, info.height, info.baseLine));
+					metrics.push(makeLineInfo(x, info.height, info.baseLine, info.baseLineOffset));
 					info.height = fontInfo.lineHeight;
 					info.baseLine = fontInfo.baseLine;
 					x = 0;
@@ -486,12 +546,12 @@ class HtmlText extends Text {
 			if ( restPos < text.length ) {
 				if (x > maxWidth) {
 					if ( splitNode.node != null && splitNode.node != e ) {
-						metrics.push(makeLineInfo(x, info.height, info.baseLine));
+						metrics.push(makeLineInfo(x, info.height, info.baseLine, info.baseLineOffset));
 						x = wordSplit();
 					}
 				}
 				textSplit.push(text.substr(restPos));
-				metrics.push(makeLineInfo(x, info.height, info.baseLine));
+				metrics.push(makeLineInfo(x, info.height, info.baseLine, info.baseLineOffset));
 			}
 
 			if (newLine || metrics.length == 0) {
@@ -540,7 +600,7 @@ class HtmlText extends Text {
 			with all sizes and word breaks so analysis is much more easy.
 		*/
 
-		var splitNode : SplitNode = { node: null, font: font, width: 0, height: 0, baseLine: 0, pos: 0, prevChar: -1 };
+		var splitNode : SplitNode = { node: null, font: font, width: 0, height: 0, baseLine: 0, baseLineOffset: 0, pos: 0, prevChar: -1 };
 		var metrics = [makeLineInfo(0, font.lineHeight, font.baseLine)];
 		prevChar = -1;
 		newLine = true;
@@ -557,7 +617,7 @@ class HtmlText extends Text {
 				var startI = 0;
 				var index = Lambda.indexOf(e.parent, e);
 				for (i in 0...text.length) {
-					if (text.charCodeAt(i) == '\n'.code) {
+					if (StringTools.fastCodeAt(text, i) == '\n'.code) {
 						var pre = text.substring(startI, i);
 						if (pre != "") e.parent.insertChild(Xml.createPCData(pre), index++);
 						e.parent.insertChild(Xml.createElement("br"),index++);
@@ -664,6 +724,14 @@ class HtmlText extends Text {
 				@:privateAccess glyphs.curColor.load(prev.curColor);
 				elements.push(glyphs);
 			}
+			var tag = resolveHtmlTag(nodeName);
+			if( tag != null ) {
+				if( tag.font != null ) setFont(tag.font);
+				if( tag.color != null ) {
+					if( prevColor == null ) prevColor = @:privateAccess glyphs.curColor.clone();
+					glyphs.setDefaultColor(tag.color);
+				}
+			}
 			switch( nodeName ) {
 			case "font":
 				for( a in e.attributes() ) {
@@ -671,7 +739,7 @@ class HtmlText extends Text {
 					switch( a.toLowerCase() ) {
 					case "color":
 						if( prevColor == null ) prevColor = @:privateAccess glyphs.curColor.clone();
-						if( v.charCodeAt(0) == '#'.code && v.length == 4 )
+						if( v.length == 4 && StringTools.fastCodeAt(v, 0) == '#'.code )
 							v = "#" + v.charAt(1) + v.charAt(1) + v.charAt(2) + v.charAt(2) + v.charAt(3) + v.charAt(3);
 						glyphs.setDefaultColor(Std.parseInt("0x" + v.substr(1)));
 					case "opacity":
@@ -712,9 +780,9 @@ class HtmlText extends Text {
 					nextLine(align, metrics[sizePos].width);
 				}
 			case "b","bold":
-				setFont("bold");
+				if( tag?.font == null ) setFont("bold");
 			case "i","italic":
-				setFont("italic");
+				if( tag?.font == null ) setFont("italic");
 			case "br":
 				makeLineBreak();
 				newLine = true;
@@ -727,7 +795,7 @@ class HtmlText extends Text {
 					case Bottom:
 						py += metrics[sizePos].baseLine - i.height;
 					case Middle:
-						py += metrics[sizePos].baseLine - i.height/2;
+						py += ((metrics[sizePos].baseLine + metrics[sizePos].baseLineOffset) - i.height)/2;
 					case Top:
 				}
 				if( py + i.dy < calcYMin )
@@ -781,7 +849,7 @@ class HtmlText extends Text {
 			var t = e.nodeValue;
 			var dy = metrics[sizePos].baseLine - font.baseLine;
 			for( i in 0...t.length ) {
-				var cc = t.charCodeAt(i);
+				var cc = StringTools.fastCodeAt(t, i);
 				if( cc == "\n".code ) {
 					makeLineBreak();
 					dy = metrics[sizePos].baseLine - font.baseLine;
@@ -865,6 +933,7 @@ private typedef LineInfo = {
 	var width : Float;
 	var height : Float;
 	var baseLine : Float;
+	var baseLineOffset : Float;
 }
 
 private typedef SplitNode = {
@@ -874,5 +943,6 @@ private typedef SplitNode = {
 	var width : Float;
 	var height : Float;
 	var baseLine : Float;
+	var baseLineOffset : Float;
 	var font : h2d.Font;
 }

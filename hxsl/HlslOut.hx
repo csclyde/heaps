@@ -49,7 +49,7 @@ class Samplers {
 class HlslOut {
 
 	static var KWD_LIST = [
-		"s_input", "s_output", "_in", "_out", "in", "out", "mul", "matrix", "vector", "export", "half", "float", "double", "line", "linear", "point", "precise",
+		"s_input", "s_output", "_in", "_out", "in", "out", "mul", "matrix", "vector", "export", "half", "half2", "half3", "half4", "float", "double", "line", "linear", "point", "precise",
 		"sample" // pssl
 	];
 	static var KWDS = [for( k in KWD_LIST ) k => true];
@@ -82,6 +82,7 @@ class HlslOut {
 		m.set(IntBitsToFloat, "asfloat");
 		m.set(UintBitsToFloat, "_uintBitsToFloat");
 		m.set(RoundEven, "round");
+		m.set(GroupMemoryBarrier, "GroupMemoryBarrier");
 		for( g in m )
 			KWDS.set(g, true);
 		m;
@@ -133,7 +134,7 @@ class HlslOut {
 	}
 
 	inline function ident( v : TVar ) {
-		add(varName(v));
+		add(varName(v, varNames, allNames));
 	}
 
 	function decl( s : String ) {
@@ -187,14 +188,7 @@ class HlslOut {
 			add("function");
 		case TArray(t, size), TBuffer(t,size,_):
 			addType(t);
-			add("[");
-			switch( size ) {
-			case SVar(v):
-				ident(v);
-			case SConst(v):
-				add(v);
-			}
-			add("]");
+			addArraySize(size);
 		case TChannel(n):
 			add("channel" + n);
 		}
@@ -204,6 +198,7 @@ class HlslOut {
 		add("[");
 		switch( size ) {
 		case SVar(v): ident(v);
+		case SConst(0):
 		case SConst(n): add(n);
 		}
 		add("]");
@@ -219,6 +214,11 @@ class HlslOut {
 				kind : v.kind,
 			});
 			addArraySize(size);
+		case TBuffer(t, size, Storage):
+			add('StructuredBuffer<');
+			addType(t);
+			add('> ');
+			ident(v);
 		case TBuffer(t, size, RW):
 			add('RWStructuredBuffer<');
 			addType(t);
@@ -234,7 +234,7 @@ class HlslOut {
 	function addValue( e : TExpr, tabs : String ) {
 		switch( e.e ) {
 		case TBlock(el):
-			var name = "val" + (exprIds++);
+			var name = "_val" + (exprIds++);
 			var tmp = buf;
 			buf = new StringBuf();
 			addType(e.t);
@@ -354,6 +354,28 @@ class HlslOut {
 			decl("float2 _uintBitsToFloat( int2 v ) { return asfloat(asuint(v)); }");
 			decl("float3 _uintBitsToFloat( int3 v ) { return asfloat(asuint(v)); }");
 			decl("float4 _uintBitsToFloat( int4 v ) { return asfloat(asuint(v)); }");
+		case UnpackSnorm4x8:
+			decl("float4 unpackSnorm4x8( int v ) {
+				float4 unpack;
+				unpack.x = clamp(((asuint(v) & asuint(0xff000000)) >> 24) / 127.0, -1.0, 1.0);
+				unpack.y = clamp(((asuint(v) & asuint(0x00ff0000)) >> 16) / 127.0, -1.0, 1.0);
+				unpack.z = clamp(((asuint(v) & asuint(0x0000ff00)) >> 8) / 127.0, -1.0, 1.0);
+				unpack.w = clamp(((asuint(v) & asuint(0x000000ff)) >> 0) / 127.0, -1.0, 1.0);
+				return unpack;
+			 }");
+		case UnpackUnorm4x8:
+			decl("float4 unpackUnorm4x8( int v ) {
+				float4 unpack;
+				unpack.x = ((asuint(v) & asuint(0xff000000)) >> 24) / 255.0;
+				unpack.y = ((asuint(v) & asuint(0x00ff0000)) >> 16) / 255.0;
+				unpack.z = ((asuint(v) & asuint(0x0000ff00)) >> 8) / 255.0;
+				unpack.w = ((asuint(v) & asuint(0x000000ff)) >> 0) / 255.0;
+				return unpack;
+			 }");
+		case AtomicAdd:
+			decl("int atomicAdd( RWStructuredBuffer<int> buf, int index, int data ) { int val; InterlockedAdd(buf[index], data, val); return val; }");
+		case InvLerp:
+			decl("float invLerp(float v, float a, float b) { return saturate((v - a) / (b - a)); }");
 		case TextureSize:
 			var tt = args[0].t;
 			var tstr = getTexType(tt);
@@ -387,6 +409,12 @@ class HlslOut {
 			decl("float3 vec3( float v ) { return float3(v,v,v); }");
 		case Vec4 if( args.length == 1 && args[0].t == TFloat ):
 			decl("float4 vec4( float v ) { return float4(v,v,v,v); }");
+		case IVec2 if( args.length == 1 && args[0].t.match(TInt | TFloat)):
+			decl("int2 ivec2( int v ) { return int2(v,v); }");
+		case IVec3 if( args.length == 1 && args[0].t.match(TInt | TFloat)):
+			decl("int3 ivec3( int v ) { return int3(v,v,v); }");
+		case IVec4 if( args.length == 1 && args[0].t.match(TInt | TFloat)):
+			decl("int4 ivec4( int v ) { return int4(v,v,v,v); }");
 		default:
 		}
 	}
@@ -450,7 +478,7 @@ class HlslOut {
 		case TCall({ e : TGlobal(g = (Texel)) }, args):
 			addValue(args[0], tabs);
 			add(".Load(");
-			switch( args[1].t ) {
+			switch( args[0].t ) {
 			case TSampler(dim,arr):
 				var size = Tools.getDimSize(dim, arr) + 1;
 				add("int"+size+"(");
@@ -470,6 +498,8 @@ class HlslOut {
 			declGlobal(g, args);
 			switch( [g,args] ) {
 			case [Vec2|Vec3|Vec4, [{ t : TFloat }]]:
+				add(g.getName().toLowerCase());
+			case [IVec2|IVec3|IVec4, [{ t : TInt }]|[{ t : TFloat }]]:
 				add(g.getName().toLowerCase());
 			default:
 				addValue(e,tabs);
@@ -699,10 +729,26 @@ class HlslOut {
 			addValue(e, tabs);
 			add(".");
 			add(f);
+		case TSyntax("code" | "hlsl", code, args):
+			var pos = 0;
+			var argRegex = ~/{(\d+)}/g;
+			while ( argRegex.matchSub(code, pos) ) {
+				var matchPos = argRegex.matchedPos();
+				add(code.substring(pos, matchPos.pos));
+				var index = Std.parseInt(argRegex.matched(1));
+				// if (index >= args.length) throw "Attempting to use substitution index of " + index + ", which is out of bounds of argument list";
+				if ( index < args.length )
+					addValue(args[index].e, tabs);
+
+				pos = matchPos.pos + matchPos.len;
+			}
+			add(code.substr(pos));
+		case TSyntax(_, _, _):
+			// Do nothing: Code for other language
 		}
 	}
 
-	function varName( v : TVar ) {
+	public static function varName(v : TVar, varNames : Map<Int, String>, allNames : Map<String, Int>) : String {
 		var n = varNames.get(v.id);
 		if( n != null )
 			return n;
@@ -758,11 +804,13 @@ class HlslOut {
 		var index = 0;
 		function declVar(prefix:String, v : TVar ) {
 			add("\t");
+			if ( Tools.hasQualifier(v, Flat) )
+				add("nointerpolation ");
 			addVar(v);
 			if( v.kind == Output )
 				add(" : " + (isVertex ? SV_POSITION : SV_TARGET + (index++)));
 			else
-				add(" : " + semanticName(v.name));
+				add(" : " + semanticName(varNames.get(v.id)));
 			add(";\n");
 			varAccess.set(v.id, prefix);
 		}
@@ -771,6 +819,8 @@ class HlslOut {
 		for( f in s.funs )
 			collectGlobals(foundGlobals, f.expr);
 
+		var oldAllNames = allNames;
+		allNames = new Map();
 		add("struct s_input {\n");
 		if( kind == Fragment )
 			add("\tfloat4 __pos__ : "+SV_POSITION+";\n");
@@ -782,7 +832,7 @@ class HlslOut {
 			if( sv == null ) continue;
 			add("\t");
 			switch( g ) {
-			case InstanceID:
+			case InstanceID, VertexID:
 				add("uint");
 			default:
 				addType(foundGlobals.get(g));
@@ -798,6 +848,7 @@ class HlslOut {
 		add("};\n\n");
 
 		if( !isCompute ) {
+			allNames = new Map();
 			add("struct s_output {\n");
 			for( v in s.vars )
 				if( v.kind == Output )
@@ -807,6 +858,8 @@ class HlslOut {
 					declVar("_out.", v);
 			add("};\n\n");
 		}
+
+		allNames = oldAllNames;
 	}
 
 	function initGlobals( s : ShaderData ) {
@@ -850,12 +903,16 @@ class HlslOut {
 		add("};\n\n");
 
 		var regCount = baseRegister + 2;
+		var storageRegister = 0;
 		for( b in buffers.concat(uavs) ) {
 			switch( b.type ) {
 			case TBuffer(t, size, Uniform):
 				add('cbuffer _buffer$regCount : register(b${regCount++}) { ');
 				addVar(b);
 				add("; };\n");
+			case TBuffer(t, size, Storage):
+				addVar(b);
+				add(' : register(t${storageRegister++});\n');
 			default:
 				addVar(b);
 				add(' : register(u${regCount++});\n');
@@ -864,7 +921,7 @@ class HlslOut {
 		if( buffers.length + uavs.length > 0 ) add("\n");
 
 		var ctx = new Samplers();
-		var texCount = 0;
+		var texCount = storageRegister;
 		for( v in textures ) {
 			addVar(v);
 			add(' : register(t${texCount});\n');

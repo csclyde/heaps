@@ -273,14 +273,18 @@ class DirShadowMap extends Shadows {
 		}
 		super.draw(passes, sort);
 
-		var doBlur = blur.radius > 0 && (mode != Mixed || !ctx.computingStatic);
+		var computingStatic = ctx.computingStatic || updateStatic;
+
+		var doBlur = blur.radius > 0 && (mode != Mixed || !computingStatic);
 
 		if( border != null && !doBlur )
 			border.render();
 
 		ctx.engine.popTarget();
 
-		if( mode == Mixed && !ctx.computingStatic ) {
+		if( mode == Mixed && !computingStatic && staticTexture != null && !staticTexture.isDisposed() ) {
+			if ( staticTexture.width != tex.width )
+				throw "Static shadow map doesnt match dynamic shadow map";
 			var merge = ctx.textures.allocTarget("mergedDirShadowMap", size, size, false, format);
 			mergePass.shader.texA = tex;
 			mergePass.shader.texB = staticTexture;
@@ -318,7 +322,9 @@ class DirShadowMap extends Shadows {
 		if( !filterPasses(passes) )
 			return;
 
-		if( mode != Mixed || ctx.computingStatic ) {
+		var computingStatic = ctx.computingStatic || updateStatic;
+
+		if( mode != Mixed || computingStatic ) {
 			var ct = ctx.camera.target;
 			var slight = light == null ? ctx.lightSystem.shadowLight : light;
 			var ldir = slight == null ? null : @:privateAccess slight.getShadowDirection();
@@ -345,12 +351,12 @@ class DirShadowMap extends Shadows {
 		var texture = ctx.textures.allocTarget("dirShadowMap", size, size, false, format);
 		if( depth == null || depth.width != size || depth.height != size || depth.isDisposed() ) {
 			if( depth != null ) depth.dispose();
-			depth = new h3d.mat.Texture(size, size, Depth24Stencil8);
+			depth = new h3d.mat.Texture(size, size, hxd.PixelFormat.Depth24Stencil8);
 			depth.name = "dirShadowMapDepth";
 		}
 		texture.depthBuffer = depth;
 		#else
-		depth = ctx.textures.allocTarget("dirShadowMap", size, size, false, Depth24Stencil8);
+		depth = ctx.textures.allocTarget("dirShadowMap", size, size, false, hxd.PixelFormat.Depth24Stencil8);
 		var texture = depth;
 		#end
 
@@ -358,6 +364,8 @@ class DirShadowMap extends Shadows {
 
 		syncShader(texture);
 
+		updateStatic = false;
+		
 		#if editor
 		drawDebug();
 		#end
@@ -388,36 +396,48 @@ class DirShadowMap extends Shadows {
 			return;
 		g.clear();
 
-		drawBounds(lightCamera, 0xffffff);
+		drawBounds(lightCamera.getInverseViewProj(), 0xffffff);
 	}
 
-	function drawBounds(camera : h3d.Camera, color : Int) {
+	function drawBounds(invViewModel : h3d.Matrix, color : Int) {
 
-		var nearPlaneCorner = [camera.unproject(-1, 1, 0), camera.unproject(1, 1, 0), camera.unproject(1, -1, 0), camera.unproject(-1, -1, 0)];
-		var farPlaneCorner = [camera.unproject(-1, 1, 1), camera.unproject(1, 1, 1), camera.unproject(1, -1, 1), camera.unproject(-1, -1, 1)];
+		inline function unproject(screenX, screenY, camZ) {
+			var p = new h3d.Vector(screenX, screenY, camZ);
+			p.project(invViewModel);
+			return p;
+		}
+
+		var nearPlaneCorner = [unproject(-1, 1, 0), unproject(1, 1, 0), unproject(1, -1, 0), unproject(-1, -1, 0)];
+		var farPlaneCorner = [unproject(-1, 1, 1), unproject(1, 1, 1), unproject(1, -1, 1), unproject(-1, -1, 1)];
 
 		g.lineStyle(1, color);
 
 		// Near Plane
 		var last = nearPlaneCorner[nearPlaneCorner.length - 1];
-		g.moveTo(last.x,last.y,last.z);
+		inline function moveTo(x : Float, y : Float, z : Float) {
+			g.moveTo(x - ctx.scene.x, y - ctx.scene.y, z - ctx.scene.z);
+		}
+		inline function lineTo(x : Float, y : Float, z : Float) {
+			g.lineTo(x - ctx.scene.x, y - ctx.scene.y, z - ctx.scene.z);
+		}
+		moveTo(last.x,last.y,last.z);
 		for( fc in nearPlaneCorner ) {
-			g.lineTo(fc.x, fc.y, fc.z);
+			lineTo(fc.x, fc.y, fc.z);
 		}
 
 		// Far Plane
 		var last = farPlaneCorner[farPlaneCorner.length - 1];
-		g.moveTo(last.x,last.y,last.z);
+		moveTo(last.x,last.y,last.z);
 		for( fc in farPlaneCorner ) {
-			g.lineTo(fc.x, fc.y, fc.z);
+			lineTo(fc.x, fc.y, fc.z);
 		}
 
 		// Connections
 		for( i in 0 ... 4 ) {
 			var np = nearPlaneCorner[i];
 			var fp = farPlaneCorner[i];
-			g.moveTo(np.x, np.y, np.z);
-			g.lineTo(fp.x, fp.y, fp.z);
+			moveTo(np.x, np.y, np.z);
+			lineTo(fp.x, fp.y, fp.z);
 		}
 	}
 }

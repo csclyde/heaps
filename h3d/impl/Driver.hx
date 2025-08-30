@@ -10,7 +10,7 @@ typedef Texture = { t : js.html.webgl.Texture, width : Int, height : Int, intern
 typedef Query = {};
 #elseif hlsdl
 typedef GPUBuffer = sdl.GL.Buffer;
-typedef Texture = { t : sdl.GL.Texture, width : Int, height : Int, internalFmt : Int, pixelFmt : Int, bits : Int, bind : Int, bias : Float, startMip : Int };
+typedef Texture = { t : sdl.GL.Texture, width : Int, height : Int, internalFmt : Int, pixelFmt : Int, bits : Int, bind : Int, bias : Float, startMip : Int #if multidriver, driver : Driver #end };
 typedef Query = { q : sdl.GL.Query, kind : QueryKind };
 #elseif usegl
 typedef GPUBuffer = haxe.GLTypes.Buffer;
@@ -92,6 +92,10 @@ enum QueryKind {
 		The result will give the number of samples that passes the depth buffer between beginQuery/endQuery range
 	**/
 	Samples;
+	/**
+		The result will give the GPU elapsed time (in nanoseconds, 1e-9 seconds) between beginQuery/endQuery range
+	**/
+	TimeElapsed;
 }
 
 enum RenderFlag {
@@ -182,6 +186,9 @@ class Driver {
 	public function uploadShaderBuffers( buffers : h3d.shader.Buffers, which : h3d.shader.Buffers.BufferKind ) {
 	}
 
+	public function flushShaderBuffers() {
+	}
+
 	public function selectBuffer( buffer : Buffer ) {
 	}
 
@@ -204,6 +211,12 @@ class Driver {
 	}
 
 	public function setDepth( tex : Null<h3d.mat.Texture> ) {
+	}
+
+	public function setDepthClamp( enabled : Bool ) {
+	}
+
+	public function setDepthBias( depthBias : Float,  slopeScaledBias : Float ) {
 	}
 
 	public function allocDepthBuffer( b : h3d.mat.Texture ) : Texture {
@@ -237,6 +250,9 @@ class Driver {
 	public function allocInstanceBuffer( b : h3d.impl.InstanceBuffer, bytes : haxe.io.Bytes ) {
 	}
 
+	public function uploadInstanceBufferBytes(b : h3d.impl.InstanceBuffer, startVertex : Int, vertexCount : Int, buf : haxe.io.Bytes, bufPos : Int ) {
+	}
+
 	public function disposeTexture( t : h3d.mat.Texture ) {
 	}
 
@@ -262,7 +278,6 @@ class Driver {
 	}
 
 	public function readBufferBytes( b : Buffer, startVertex : Int, vertexCount : Int, buf : haxe.io.Bytes, bufPos : Int ) {
-		throw "Driver does not allow to read vertex bytes";
 	}
 
 	/**
@@ -297,7 +312,11 @@ class Driver {
 
 	// --- COMPUTE
 
-	public function computeDispatch( x : Int = 1, y : Int = 1, z : Int = 1 ) {
+	public function computeDispatch( x : Int = 1, y : Int = 1, z : Int = 1, barrier: Bool = true ) {
+		throw "Compute shaders are not implemented on this platform";
+	}
+
+	public function memoryBarrier(){
 		throw "Compute shaders are not implemented on this platform";
 	}
 

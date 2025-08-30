@@ -1,5 +1,11 @@
 package h2d.domkit;
 
+typedef SourceFile = {
+	name: String,
+	txt: String,
+	#if (format >= version("3.8.0")) sourceMap: format.map.Data, #end
+}
+
 class Style extends domkit.CssStyle {
 
 	var currentObjects : Array<h2d.Object> = [];
@@ -12,13 +18,15 @@ class Style extends domkit.CssStyle {
 	public var inspectDetailsKeyCode : Int = hxd.Key.CTRL;
 	public var s3d : h3d.scene.Scene;
 	public var cssParser : domkit.CssParser;
+	public var onInspectHyperlink : (String) -> Void = null;
+	public var inspectModeActive(default,null) = false;
 
 	public function new() {
 		super();
 		cssParser = new domkit.CssParser();
 	}
 
-	public function load( r : hxd.res.Resource, watchChanges = true ) {
+	public function load( r : hxd.res.Resource, watchChanges = true, isVariablesDef = false ) {
 		if( watchChanges ) r.watch(function() {
 			#if (sys || nodejs)
 			var fs = Std.downcast(hxd.res.Loader.currentInstance.fs, hxd.fs.LocalFileSystem);
@@ -26,12 +34,20 @@ class Style extends domkit.CssStyle {
 			#end
 			onChange();
 		});
+		if( resources.indexOf(r) >= 0 )
+			return;
 		resources.push(r);
 		var variables = cssParser.variables.copy();
-		add(cssParser.parseSheet(r.entry.getText()));
-		cssParser.variables = variables;
+		var data = loadData(r);
+		add( try cssParser.parseSheet(data, r.name) catch( e : domkit.Error ) throw r.entry.path+":"+data.substr(0,e.pmin).split("\n").length+": "+e.message );
+		if( !isVariablesDef )
+			cssParser.variables = variables;
 		for( o in currentObjects )
 			o.dom.applyStyle(this);
+	}
+
+	function loadData( r : hxd.res.Resource ) {
+		return r.entry.getText();
 	}
 
 	public function unload( r : hxd.res.Resource ) {
@@ -77,9 +93,82 @@ class Style extends domkit.CssStyle {
 				ee = ee.parent;
 			}
 			if( msg == null ) msg = "Invalid property value '"+(domkit.CssParser.valueStr(s.value))+"'";
-			errors.push(msg+" for " + path);
+			var posStr = "";
+			var f = find(sourceFiles, f -> f.name == s.pos.file);
+			if (s.pos != null && f != null) {
+				var pos = getPos(f, s.pos.pmin);
+				posStr = pos.file+":"+pos.line+": ";
+			}
+			errors.push(posStr+msg+" for " + path);
 		}
 	}
+
+	inline function find<T>( it : Array<T>, f : T -> Bool ) : Null<T> {
+		var ret = null;
+		for( v in it ) {
+			if(f(v)) {
+				ret = v;
+				break;
+			}
+		}
+		return ret;
+	}
+	inline function countLines(str: String, until = -1, code = "\n".code) {
+		var ret = {
+			line: 1,
+			col: 0,
+		}
+		if (until < 0)
+			until = str.length;
+		var lastFound = 0;
+		for( i in 0...until ) {
+			if( StringTools.fastCodeAt(str, i) == code ) {
+				ret.line++;
+				lastFound = i;
+			}
+		}
+		ret.col = until - lastFound;
+		return ret;
+	}
+	inline function getPos(f: SourceFile, pmin) {
+		var count = countLines(f.txt, pmin);
+		var line = count.line;
+		var col = count.col;
+		var file = f.name;
+		#if (format >= version("3.8.0"))
+		if (f.sourceMap != null) {
+			var pos = f.sourceMap.originalPositionFor(count.line, count.col);
+			if (pos != null) {
+				file = pos.source;
+				line = pos.originalLine;
+				if (pos.originalColumn == null)
+					col = -1;
+				else
+					col = pos.originalColumn;
+			}
+		}
+		#end
+		return {
+			line: line,
+			count: count,
+			file: file,
+			col: col,
+		};
+	}
+
+	#if (format >= version("3.8.0"))
+	function getSourceMapFor(r: hxd.res.Resource) {
+		var mapFile = r.entry.path + ".map";
+		if( hxd.res.Loader.currentInstance.exists(mapFile) ) {
+			var mapContent = hxd.res.Loader.currentInstance.load(mapFile).toText();
+			try {
+				return new format.map.Reader().parse(mapContent);
+			} catch(e) {}
+		}
+		return null;
+	}
+	#end
+	var sourceFiles: Array<SourceFile> = [];
 
 	function onChange( ntry : Int = 0 ) {
 		if( ntry >= 10 ) return;
@@ -87,21 +176,35 @@ class Style extends domkit.CssStyle {
 		var oldRules = data.rules;
 		errors = [];
 		data.rules = [];
+		sourceFiles = [];
 		for( r in resources ) {
-			var txt = try r.entry.getText() catch( e : Dynamic ) { haxe.Timer.delay(onChange.bind(ntry),100); data.rules = oldRules; return; }
+			var txt = try loadData(r) catch( e : Dynamic ) { haxe.Timer.delay(onChange.bind(ntry),100); data.rules = oldRules; return; }
+			var curFile = {
+				name: r.entry.name,
+				txt: txt,
+				#if (format >= version("3.8.0"))
+				sourceMap: getSourceMapFor(r),
+				#end
+			};
+			sourceFiles.push(curFile);
 			try {
-				data.add(cssParser.parseSheet(txt));
+				data.add(cssParser.parseSheet(txt, r.name));
 			} catch( e : domkit.Error ) {
 				cssParser.warnings.push({ msg : e.message, pmin : e.pmin, pmax : e.pmax });
 			}
 			for( w in cssParser.warnings ) {
-				var line = txt.substr(0,w.pmin).split("\n").length;
-				errors.push(r.entry.path+":"+line+": " + w.msg);
+				var pos = getPos(curFile, w.pmin);
+				errors.push(pos.file+":"+pos.line+": " + w.msg);
 		 	}
 		}
+		onReload();
 		for( o in currentObjects )
 			o.dom.applyStyle(this);
 		refreshErrors();
+		sourceFiles = [];
+	}
+
+	public dynamic function onReload() {
 	}
 
 	function refreshErrors( ?scene ) {
@@ -139,11 +242,11 @@ class Style extends domkit.CssStyle {
 
 	// ------ inspector -----
 
-	var inspectModeActive = false;
 	var inspectModeDetails = false;
 	var inspectModeDetailsRight = -1;
 	var inspectPreview : h2d.Object;
 	var inspectPreviewObjects : Array<h2d.Object>;
+	var prevDebug : Null<Bool>;
 
 	function set_allowInspect(b) {
 		if( allowInspect == b )
@@ -160,7 +263,10 @@ class Style extends domkit.CssStyle {
 				if( s == null || scenes.indexOf(s) >= 0 ) continue;
 				scenes.push(s);
 				function scanRec(o:h2d.Object) {
-					if( o.dom != null ) @:privateAccess o.dom.currentValues = null;
+					if( o.dom != null ) {
+						@:privateAccess o.dom.currentValues = null;
+						@:privateAccess o.dom.currentRuleStyles = null;
+					}
 					for( o in o ) scanRec(o);
 				}
 				scanRec(s);
@@ -173,9 +279,11 @@ class Style extends domkit.CssStyle {
 		return allowInspect = b;
 	}
 
+	var lastFrame = -1;
 	function onWindowEvent( e : hxd.Event ) {
 		switch( e.kind ) {
 		case EPush if( inspectKeyCode == 0 || hxd.Key.isDown(inspectKeyCode) ):
+			lastFrame = -1;
 			if( e.button == hxd.Key.MOUSE_MIDDLE ) {
 				if(hxd.Key.isDown(inspectDetailsKeyCode)) {
 					inspectModeActive = true;
@@ -191,16 +299,33 @@ class Style extends domkit.CssStyle {
 				if( inspectModeActive && s3d != null && @:privateAccess s3d.renderer.debugging )
 					inspectModeActive = false;
 
-				if( inspectModeActive )
+				if( inspectModeActive ) {
 					updatePreview(e);
-				else {
+					if( inspectModeDetails && inspectPreview == null ) {
+						inspectModeActive = false;
+						inspectModeDetails = false;
+					}
+				}
+				if( !inspectModeActive ) {
 					clearPreview();
 					hxd.System.setNativeCursor(Default);
 				}
 			}
 		case EMove:
-			if( inspectModeActive && !inspectModeDetails) updatePreview(e);
+			if( inspectModeActive && !inspectModeDetails ) {
+				var anyScene = null;
+				for( o in currentObjects ) {
+					anyScene = o.getScene();
+					if( anyScene != null ) break;
+				}
+				if( anyScene == null || lastFrame < anyScene.renderer.frame ) {
+					if( anyScene != null )
+						lastFrame = anyScene.renderer.frame;
+					updatePreview(e);
+				}
+			}
 		case EWheel if( inspectKeyCode == 0 || hxd.Key.isDown(inspectKeyCode) ):
+			lastFrame = -1;
 			if( inspectPreviewObjects != null ) {
 				if( e.wheelDelta > 0 ) {
 					var p = inspectPreviewObjects[0].parent;
@@ -229,7 +354,7 @@ class Style extends domkit.CssStyle {
 		if( inspectPreview == null ) return;
 		var obj = inspectPreviewObjects[0];
 		var flow = Std.downcast(obj, h2d.Flow);
-		if( flow != null ) flow.debug = false;
+		if( flow != null ) flow.debug = prevDebug;
 		inspectPreview.remove();
 		inspectPreview = null;
 		inspectPreviewObjects = null;
@@ -255,6 +380,9 @@ class Style extends domkit.CssStyle {
 	function lookupRec( obj : h2d.Object, e : hxd.Event ) {
 		if( !obj.visible || obj.alpha <= 0 )
 			return false;
+		var fl = Std.downcast(obj, h2d.Flow);
+		if( fl != null && fl.debug == false )
+			return false;
 		var ch = @:privateAccess obj.children;
 		for( i in 0...ch.length ) {
 			if( lookupRec(ch[ch.length-1-i], e) )
@@ -262,13 +390,12 @@ class Style extends domkit.CssStyle {
 		}
 		if( obj.dom == null )
 			return false;
+		if( fl != null && fl.backgroundTile == null && fl.interactive == null )
+			return false;
 		var b = obj.getBounds();
 		if( !b.contains(new h2d.col.Point(e.relX,e.relY)) )
 			return false;
 		if( Type.getClass(obj) == h2d.Object ) // objects containing transparent flow?
-			return false;
-		var fl = Std.downcast(obj, h2d.Flow);
-		if( fl != null && fl.backgroundTile == null && fl.interactive == null )
 			return false;
 		setPreview(obj);
 		return true;
@@ -372,9 +499,10 @@ class Style extends domkit.CssStyle {
 		p.x = Math.round(b.xMin);
 		p.y = Math.round(b.yMin);
 		var flow = Std.downcast(obj, h2d.Flow);
-		if( flow != null )
+		if( flow != null ) {
+			prevDebug = flow.debug;
 			flow.debug = true;
-		else {
+		} else {
 			var w = p.tile.iwidth;
 			var h = p.tile.iheight;
 			var horiz = h2d.Tile.fromColor(0xFF0000, w, 1);
@@ -389,25 +517,120 @@ class Style extends domkit.CssStyle {
 		prevFlow.backgroundTile = h2d.Tile.fromColor(0,0.8);
 		prevFlow.padding = 7;
 		prevFlow.paddingTop = 4;
+		prevFlow.layout = Vertical;
+		prevFlow.verticalSpacing = 16;
 
-		var previewText = new h2d.HtmlText(hxd.res.DefaultFont.get(), prevFlow);
-		var lines = [];
-		lines.push(getDisplayInfo(obj));
-		lines.push("");
+		var previewTitle = new h2d.HtmlText(hxd.res.DefaultFont.get(), prevFlow);
+
+		var propsFlow = new h2d.Flow(prevFlow);
+		var propsLineText = new h2d.HtmlText(hxd.res.DefaultFont.get(), propsFlow);
+		var propsValueText = new h2d.HtmlText(hxd.res.DefaultFont.get(), propsFlow);
+
+		if (onInspectHyperlink != null)
+			propsLineText.onHyperlink = onInspectHyperlink;
+
+		previewTitle.text = getDisplayInfo(obj);
 		var dom = obj.dom;
+
 		if(dom != null) {
+			var posLines = [];
+			var valueLines = [];
+			var files: Array<SourceFile> = [];
+			var lineDigits = 0;
+
+			for( i in 0...dom.currentSet.length ) {
+				if( dom.currentRuleStyles == null || dom.currentRuleStyles[i] == null )
+					continue;
+				var vs = dom.currentRuleStyles[i];
+				if (find(files, f -> f.name == vs.pos.file) != null)
+					continue;
+				var r = find(resources, r -> r.name == vs.pos.file);
+				if (r != null) {
+					var txt = loadData(r);
+					files.push({
+						name: vs.pos.file,
+						txt: txt,
+						#if (format >= version("3.8.0"))
+						sourceMap: getSourceMapFor(r),
+						#end
+					});
+					lineDigits = hxd.Math.imax(lineDigits, Std.int(Math.log(countLines(txt).line) / Math.log(10)));
+				}
+			}
+
 			for( s in dom.style ) {
 				if( s.p.name == "text" || Std.isOfType(s.value,h2d.Tile) ) continue;
-				lines.push(' <font color="#D0D0D0"> ${s.p.name}</font> <font color="#808080">${s.value}</font><font color="#606060"> (style)</font>');
+				valueLines.push(' <font color="#D0D0D0"> ${s.p.name}</font> <font color="#808080">${s.value}</font><font color="#606060"> (style)</font>');
 			}
+			var emptyDigits = "";
+			for (i in 0...lineDigits)
+				emptyDigits += " ";
 			for( i in 0...dom.currentSet.length ) {
 				var p = dom.currentSet[i];
 				if( p.name == "text" ) continue;
 				var v = dom.currentValues == null ? null : dom.currentValues[i];
+				var vs = dom.currentRuleStyles == null ? null : dom.currentRuleStyles[i];
+				var lStr = emptyDigits;
+				if (vs != null) {
+					v = vs.value;
+					var f = find(files, f -> f.name == vs.pos.file);
+					if (f != null) {
+						var res = find(resources, r -> r.name == f.name);
+						var resDir = "";
+						#if (sys || nodejs)
+						var entry = Std.downcast(res?.entry, hxd.fs.LocalFileSystem.LocalEntry);
+						if (entry != null && @:privateAccess entry.file.lastIndexOf("/") > 0) {
+							resDir = @:privateAccess entry.file.substr(0, entry.file.lastIndexOf("/"));
+						}
+						#end
+						var pos = getPos(f, vs.pos.pmin);
+						var s = "" + pos.line;
+						if (pos.file == null)
+							lStr = '<font color="#707070">$s</font>';
+						else {
+							var posStr = '${pos.file}:$s';
+							if (onInspectHyperlink != null && resDir != null) {
+								var colStr = pos.col >= 0 ? (":" + pos.col) : "";
+								posStr = '<a href="$resDir/$posStr$colStr">$posStr</a>';
+							}
+							lStr = '<font color="#707070">$posStr</font>';
+						}
+					}
+				}
 				var vstr = v == null ? "???" : StringTools.htmlEscape(domkit.CssParser.valueStr(v));
-				lines.push(' <font color="#D0D0D0"> ${p.name}</font> <font color="#808080">$vstr</font>');
+				posLines.push(lStr);
+				valueLines.push('<font color="#D0D0D0"> ${p.name}</font> <font color="#808080">$vstr</font>');
 			}
-			previewText.text = lines.join("<br/>");
+			var txt = Std.downcast(obj, h2d.HtmlText);
+			if( txt != null ) {
+				// if the text has custom nodes, display them in CSS
+				var x = try @:privateAccess txt.parseText(txt.text) catch( e : Dynamic ) null;
+				var nodes = new Map();
+				function gatherRec(x:Xml) {
+					switch( x.nodeType ) {
+					case Element:
+						nodes.set(x.nodeName.toLowerCase(), true);
+						for( c in x )
+							gatherRec(c);
+					case Document:
+						for( c in x )
+							gatherRec(c);
+					default:
+					}
+				}
+				gatherRec(x);
+				nodes.remove("font");
+				nodes.remove("br");
+				nodes.remove("img");
+				var nodes = [for( k in nodes.keys() ) k];
+				nodes.sort(Reflect.compare);
+				if( nodes.length > 0 ) {
+					posLines.push("");
+					valueLines.push('<font color="#D0D0D0"> text-tags</font> <font color="#808080">${nodes.join(',')}</font>');
+				}
+			}
+			propsLineText.text = posLines.join("<br/>");
+			propsValueText.text = valueLines.join("<br/>");
 		}
 
 		var size = prevFlow.getBounds();

@@ -25,6 +25,10 @@ class PbrMaterialSetup extends MaterialSetup {
 		return @:privateAccess new PbrMaterial();
 	}
 
+	public function gloss() {
+		return true;
+	}
+
 	public static function set() {
 		MaterialSetup.current = new PbrMaterialSetup();
 	}

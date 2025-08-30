@@ -2,8 +2,10 @@ package hxsl;
 
 enum BufferKind {
 	Uniform;
+	Storage;
 	RW;
 	Partial;
+	StoragePartial;
 	RWPartial;
 }
 
@@ -100,6 +102,7 @@ enum VarQualifier {
 	Borrow( source : String );
 	Sampler( name : String );
 	Final;
+	Flat;
 }
 
 enum Prec {
@@ -178,6 +181,7 @@ enum TExprDef {
 	TWhile( e : TExpr, loop : TExpr, normalWhile : Bool );
 	TMeta( m : String, args : Array<Const>, e : TExpr );
 	TField( e : TExpr, name : String );
+	TSyntax(target : String, code : String, args : Array<SyntaxArg> ); // target = "code" should be treated as "insert regardless of target"
 }
 
 typedef TVar = {
@@ -231,6 +235,7 @@ enum TGlobal {
 	Max;
 	Clamp;
 	Mix;
+	InvLerp;
 	Step;
 	Smoothstep;
 	Length;
@@ -305,6 +310,22 @@ enum TGlobal {
 	ComputeVar_LocalInvocationIndex;
 	//ComputeVar_NumWorkGroups - no DirectX support
 	//ComputeVar_WorkGroupSize - no DirectX support
+	AtomicAdd;
+	GroupMemoryBarrier;
+	UnpackSnorm4x8;
+	UnpackUnorm4x8;
+	Transpose;
+}
+
+enum SyntaxArgAccess {
+	Read;
+	Write;
+	ReadWrite;
+}
+
+typedef SyntaxArg = {
+	e: TExpr,
+	access: SyntaxArgAccess,
 }
 
 enum Component {
@@ -401,7 +422,7 @@ class Tools {
 				}
 		case TChannel(_):
 			return 3 + MAX_CHANNELS_BITS;
-		case TBuffer(_, _, Partial|RWPartial):
+		case TBuffer(_, _, Partial|StoragePartial|RWPartial):
 			return MAX_PARTIAL_MAPPINGS_BITS;
 		default:
 		}
@@ -409,7 +430,7 @@ class Tools {
 	}
 
 	public static function isConst( v : TVar ) {
-		if( v.type.match(TChannel(_)|TBuffer(_,_,Partial|RWPartial)) )
+		if( v.type.match(TChannel(_)|TBuffer(_,_,Partial|StoragePartial|RWPartial)) )
 			return true;
 		if( v.qualifiers != null )
 			for( q in v.qualifiers )
@@ -469,8 +490,10 @@ class Tools {
 		case TBuffer(t, s, k):
 			var prefix = switch( k ) {
 			case Uniform: "Buffer";
+			case Storage: "StorageBuffer";
 			case RW: "RWBuffer";
 			case Partial: "PartialBuffer";
+			case StoragePartial: "StoragePartialBuffer";
 			case RWPartial: "RWPartialBuffer";
 			};
 			prefix+" "+toString(t) + "[" + (switch( s ) { case SConst(i): "" + i; case SVar(v): v.name; } ) + "]";
@@ -520,7 +543,9 @@ class Tools {
 			return true;
 		case TCall(e, pl):
 			switch( e.e ) {
-			case TGlobal(g) if( g != ImageStore ):
+			case TGlobal( ImageStore | AtomicAdd | GroupMemoryBarrier ):
+				return true;
+			case TGlobal(g):
 			default:
 				return true;
 			}
@@ -528,7 +553,7 @@ class Tools {
 				if( hasSideEffect(p) )
 					return true;
 			return false;
-		case TVarDecl(_), TDiscard, TContinue, TBreak, TReturn(_):
+		case TVarDecl(_), TDiscard, TContinue, TBreak, TReturn(_), TSyntax(_, _, _):
 			return true;
 		case TSwitch(e, cases, def):
 			for( c in cases ) {
@@ -572,6 +597,7 @@ class Tools {
 		case TConst(_), TVar(_), TGlobal(_), TDiscard, TContinue, TBreak:
 		case TMeta(_, _, e): f(e);
 		case TField(e, _): f(e);
+		case TSyntax(_, _, args): for (arg in args) f(arg.e);
 		}
 	}
 
@@ -594,6 +620,7 @@ class Tools {
 		case TConst(_), TVar(_), TGlobal(_), TDiscard, TContinue, TBreak: e.e;
 		case TMeta(m, args, e): TMeta(m, args, f(e)); // don't map args
 		case TField(e, name): TField(f(e), name);
+		case TSyntax(target, code, args): TSyntax(target, code, [for (arg in args) ({ e : f(arg.e), access : arg.access })]);
 		}
 		return { e : ed, t : e.t, p : e.p };
 	}
