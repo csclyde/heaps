@@ -258,6 +258,32 @@ class SpriteBatch extends Drawable {
 	}
 
 	/**
+		Preallocates the GPU buffer for at least the given number of vertices.
+		Useful to avoid buffer reallocations when bursts exceed current capacity.
+	**/
+	public function reserveVertices( count : Int ) {
+		if( count <= 0 ) return;
+		if( tmpBuf == null ) tmpBuf = new hxd.FloatBuffer();
+		tmpBuf.grow(count * 8);
+
+		var i = 0;
+		var limit = count * 8;
+		while( i < limit ) {
+			tmpBuf[i++] = 0;
+		}
+
+		if( buffer != null && !buffer.isDisposed() ) {
+			if( buffer.vertices >= count ) return;
+			buffer.dispose();
+			buffer = null;
+		}
+
+		empty = count == 0;
+		buffer = hxd.impl.Allocator.get().ofSubFloats(tmpBuf, count, hxd.BufferFormat.H2D, Dynamic);
+		bufferLoads += 1;
+	}
+
+	/**
 		Creates a new BatchElement and returns it. Shortcut to `add(new BatchElement(t))`
 		@param t The Tile element will render.
 	**/
@@ -429,7 +455,7 @@ class SpriteBatch extends Drawable {
 			e = e.next;
 		}
 		bufferVertices = pos>>3;
-		// bufferVertices *= 32;
+		
 		if( buffer != null && !buffer.isDisposed() ) {
 			if( buffer.vertices >= bufferVertices ){
 				buffer.uploadFloats(tmpBuf, 0, bufferVertices);
