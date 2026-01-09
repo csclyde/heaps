@@ -208,7 +208,7 @@ class SpriteBatch extends Drawable {
 	var first : BatchElement;
 	var last : BatchElement;
 	var tmpBuf : hxd.FloatBuffer;
-	var buffer : h3d.Buffer;
+	var buffer : Null<h3d.Buffer>;
 	var state : BatchDrawState;
 	var empty : Bool;
 
@@ -255,32 +255,6 @@ class SpriteBatch extends Drawable {
 	public function clear() {
 		first = last = null;
 		flush();
-	}
-
-	/**
-		Preallocates the GPU buffer for at least the given number of vertices.
-		Useful to avoid buffer reallocations when bursts exceed current capacity.
-	**/
-	public function reserveVertices( count : Int ) {
-		if( count <= 0 ) return;
-		if( tmpBuf == null ) tmpBuf = new hxd.FloatBuffer();
-		tmpBuf.grow(count * 8);
-
-		var i = 0;
-		var limit = count * 8;
-		while( i < limit ) {
-			tmpBuf[i++] = 0;
-		}
-
-		if( buffer != null && !buffer.isDisposed() ) {
-			if( buffer.vertices >= count ) return;
-			buffer.dispose();
-			buffer = null;
-		}
-
-		empty = count == 0;
-		buffer = hxd.impl.Allocator.get().ofSubFloats(tmpBuf, count, hxd.BufferFormat.H2D, Dynamic);
-		bufferLoads += 1;
 	}
 
 	/**
