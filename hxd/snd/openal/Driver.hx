@@ -37,8 +37,10 @@ class Driver implements hxd.snd.Driver {
 
 		canReopenDevice = false;
 		#if (hl && hlopenal >= version("1.16.0"))
-		if( hl.Api.isPrimLoaded(openal.ExtALC.reopenDeviceSoft) && ALC.isExtensionPresent(null, @:privateAccess openal.ExtALC.SOFT_reopen_device.toUtf8()) )
+		if( hl.Api.isPrimLoaded(openal.ExtALC.reopenDeviceSoft) && ALC.isExtensionPresent(null, @:privateAccess openal.ExtALC.SOFT_reopen_device.toUtf8()) ) {
 			canReopenDevice = true;
+			currentSpecifier = getDefaultDeviceSpecifier();
+		}
 		#end
 
 		if (AL.getError() != AL.NO_ERROR)
@@ -193,15 +195,21 @@ class Driver implements hxd.snd.Driver {
 		var now = haxe.Timer.stamp();
 		if( now - lastUpdate > 0.5 ) {
 			lastUpdate = now;
-			// Detect device change and reopen default
-			var bytes = ALC.getString(null, ALC.ALL_DEVICES_SPECIFIER);
-			var specifier = bytes == null ? null : @:privateAccess String.fromUTF8(bytes);
+			// Detect default output device changes and reopen on the new default
+			var specifier = getDefaultDeviceSpecifier();
 			if( specifier != currentSpecifier ) {
 				currentSpecifier = specifier;
 				openal.ExtALC.reopenDeviceSoft(device, null, null);
 			}
 		}
 		#end
+	}
+
+	function getDefaultDeviceSpecifier() : String {
+		var bytes = ALC.getString(null,
+			ALC.isExtensionPresent(null, @:privateAccess "ALC_ENUMERATE_ALL_EXT".toUtf8()) ? ALC.DEFAULT_ALL_DEVICES_SPECIFIER : ALC.DEFAULT_DEVICE_SPECIFIER
+		);
+		return bytes == null ? null : @:privateAccess String.fromUTF8(bytes);
 	}
 
 	public function dispose() : Void {
@@ -222,3 +230,4 @@ class Driver implements hxd.snd.Driver {
 		}
 	}
 }
+
