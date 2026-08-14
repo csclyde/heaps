@@ -14,7 +14,7 @@ class TextureCache {
 		defaultDepthBuffer = h3d.mat.Texture.getDefaultDepth();
 		if ( checkFlags < 0 ) {
 			var flags = new haxe.EnumFlags<h3d.mat.Data.TextureFlags>();
-			var flagsArray : Array<h3d.mat.Data.TextureFlags> = [Cube, MipMapped, ManualMipMapGen, Dynamic, IsArray];
+			var flagsArray : Array<h3d.mat.Data.TextureFlags> = [Cube, MipMapped, ManualMipMapGen, Dynamic, IsArray, Writable];
 			for ( f in flagsArray )
 				flags.set(f);
 			checkFlags = flags.toInt();
@@ -78,8 +78,6 @@ class TextureCache {
 		if ( !flags.contains(Target) )
 			flags.push(Target);
 		var newt = new h3d.mat.Texture(width, height, flags, format);
-		// make the texture disposable if we're out of memory
-		newt.realloc = function() {};
 		if( t != null )
 			cache.insert(position,newt);
 		else

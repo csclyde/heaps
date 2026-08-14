@@ -535,6 +535,10 @@ class Object #if (domkit && !domkit_heaps) implements domkit.Model<h2d.Object> #
 			s.setParentContainer(c);
 	}
 
+	function scrollToPos( pt : h2d.col.Point ) {
+		return false;
+	}
+
 	/**
 		Remove all children from the immediate children list.
 	**/
@@ -888,7 +892,8 @@ class Object #if (domkit && !domkit_heaps) implements domkit.Model<h2d.Object> #
 			return;
 		}
 
-		var t = ctx.textures.allocTarget("filterTemp", width, height, false);
+		var targetFmt = @:privateAccess ctx.curTarget?.format;
+		var t = ctx.textures.allocTarget("filterTemp", width, height, false, targetFmt);
 		ctx.pushTarget(t, xMin, yMin, width, height);
 		ctx.engine.clear(0);
 

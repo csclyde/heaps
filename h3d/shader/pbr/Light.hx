@@ -149,39 +149,47 @@ class CapsuleLight extends Light {
 		@param var halfLength : Float;
 		@param var left : Vec3;
 
-		function closestPointOnSegment( a : Vec3, b : Vec3, c : Vec3) : Vec3 {
-			var ab = b - a;
-			var t = dot(c - a, ab) / dot(ab, ab);
-			return a + saturate(t) * ab;
+		function closestPointLineToPoint( l0 : Vec3, l1 : Vec3, p : Vec3) : Vec3 {
+			var l01 = l1 - l0;
+			var t = dot(p - l0, l01) / dot(l01, l01);
+			return l0 + saturate(t) * l01;
 		}
 
-		var pixelColor : Vec4;
+		function closestPointLineToRay( l0 : Vec3, l1 : Vec3, r : Vec3 ) : Vec3 {
+			var l01 = l1 - l0;
+			var a = dot(l01, l01);
+			var b = dot(r, l01);
+			var t = saturate(dot(l0, b * r - l01) / ( a - b*b) );
+
+			return l0 + t * l01;
+		}
+
 		var view : Vec3;
 		function fragment() {
-			var P0 = lightPos - halfLength * left;
-			var P1 = lightPos + halfLength * left;
+			var p0 = lightPos - halfLength * left;
+			var p1 = lightPos + halfLength * left;
 
 			// Diffuse: place a point light on the closest point on the sphere placed on the closest position on the segment.
-			var spherePos = closestPointOnSegment(P0, P1, transformedPosition);
+			var spherePos = closestPointLineToPoint(p0, p1, transformedPosition);
 			var delta = spherePos - transformedPosition;
 			pbrLightDirection = delta.normalize();
-			var closestPointDiffuse = spherePos - pbrLightDirection * saturate((length(delta) - 1e-5) / radius) * radius;
-			delta = closestPointDiffuse - transformedPosition;
-			pbrLightDirection = normalize(delta);
+			var distSq = dot(delta, delta);
+			var closestPointDiffuse = spherePos - pbrLightDirection * saturate((length(delta)) / radius) * radius;
+			var delta = closestPointDiffuse - transformedPosition;
+			if ( distSq > radius * radius )
+				pbrLightDirection = normalize(delta);
 
 			// Attenuation.
 			var falloff = pointLightIntensity(delta, radius, invRange4);
 
 			// Specular.
-			var R = view - 2.0 * dot(view, normal) * normal;
-			var posToLight = lightPos - transformedPosition;
-			// Intersect a light plane with reflected ray and place a sphere on the closest point on segment.
-			var onPlane = transformedPosition + R * dot(posToLight, R);
-			var spherePosSpec = closestPointOnSegment(P0, P1, onPlane);
-			pbrSpecularLightDirection = normalize(spherePosSpec - transformedPosition);
-			// Get closest point on the sphere.
-			var closestPointSpecular = spherePosSpec - pbrSpecularLightDirection * saturate(length(spherePosSpec - transformedPosition) - 1e-5 / radius) * radius;
-			pbrSpecularLightDirection = normalize(closestPointSpecular - transformedPosition);
+			var l0 = p0 - transformedPosition;
+			var l1 = p1 - transformedPosition;
+			var r = reflect(-view, normal);
+			var closestPoint = closestPointLineToRay(l0, l1, r);
+			var centerToRay = dot(closestPoint, r) * r - closestPoint;
+			closestPoint = closestPoint + centerToRay * saturate(radius / length(centerToRay));
+			pbrSpecularLightDirection = normalize(closestPoint);
 
 			pbrLightColor = falloff * lightColor;
 			pbrOcclusionFactor = occlusionFactor;
@@ -208,6 +216,7 @@ class RectangleLight extends Light {
 
 		var view : Vec3;
 		var normal : Vec3;
+		final epsilon : Float = 0.00001;
 
 		function getIntersectionPoint(rayOrigin : Vec3, rayDirection : Vec3, p0 : Vec3, p1 : Vec3, p2 : Vec3) : Vec3 {
 			var planeNormal = cross(p1 - p0, p2 - p1).normalize();
@@ -236,7 +245,7 @@ class RectangleLight extends Light {
 		}
 
 		function getClosestPointOnRectangle(rayOrigin : Vec3, rayDirection : Vec3, p0 : Vec3, p1 : Vec3, p2 : Vec3, p3 : Vec3) : Vec3 {
-			var int = getIntersectionPoint(rayOrigin, rayDirection, p0, p1, p3);
+			var intersectionPoint = getIntersectionPoint(rayOrigin, rayDirection, p0, p1, p3);
 			var closestPoint = vec3(0, 0, 0);
 			if (traceTriangle(rayOrigin, rayDirection, p0, p3, p2)) {
 				closestPoint = getIntersectionPoint(rayOrigin, rayDirection, p0, p3, p2);
@@ -245,7 +254,7 @@ class RectangleLight extends Light {
 				closestPoint = getIntersectionPoint(rayOrigin, rayDirection, p0, p1, p3);
 			}
 			else {
-				var p = int - lightPos;
+				var p = intersectionPoint - lightPos;
 				var right = (p1 - p0).normalize();
 				var up = (p2 - p0).normalize();
 				var intRight = clamp(dot(p, right), -width * 0.5, width * 0.5) * right;
@@ -268,13 +277,13 @@ class RectangleLight extends Light {
 			var delta = closestPointDiffuse - transformedPosition;
 			pbrLightDirection = normalize(delta);
 
-			var xyEpsilon = horizontalFallOff - horizontalAngle;
+			var xyEpsilon = horizontalFallOff - horizontalAngle + epsilon;
 			var xyLightDir = invLightDir - dot(invLightDir, up) * up;
 			var xyDelta = delta - dot(delta, up) * up;
 			var xyTheta = dot(xyDelta.normalize(), xyLightDir.normalize());
 			var horizontalFalloff = saturate((xyTheta - horizontalAngle) / xyEpsilon);
 
-			var xzEpsilon = verticalFallOff - verticalAngle;
+			var xzEpsilon = verticalFallOff - verticalAngle + epsilon;
 			var xzLightDir = invLightDir - dot(invLightDir, right) * right;
 			var xzDelta = delta - dot(delta, right) * right;
 			var xzTheta = dot(xzDelta.normalize(), xzLightDir.normalize());

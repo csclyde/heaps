@@ -42,7 +42,7 @@ class SpotShadowMap extends Shadows {
 		sshader.shadowMap = texture;
 		sshader.shadowMapChannel = format == h3d.mat.Texture.nativeFormat ? PackedFloat : R;
 		sshader.shadowBias = bias;
-		sshader.shadowProj = getShadowProj();
+		sshader.shadowViewProj = getShadowViewProj();
 
 		//ESM
 		sshader.USE_ESM = samplingKind == ESM;
@@ -76,11 +76,7 @@ class SpotShadowMap extends Shadows {
 		staticTexture = new h3d.mat.Texture(size, size, [Target], format);
 		staticTexture.name = "staticTexture";
 		staticTexture.preventAutoDispose();
-		staticTexture.realloc = function () {
-			if( pixelsForRealloc != null ) {
-				staticTexture.uploadPixels(pixelsForRealloc);
-			}
-		}
+		staticTexture.realloc = null;
 		return staticTexture;
 	}
 
@@ -115,8 +111,12 @@ class SpotShadowMap extends Shadows {
 
 		var prevFar = @:privateAccess ctx.cameraFar;
 		var prevPos = @:privateAccess ctx.cameraPos;
+		var prevView = @:privateAccess ctx.cameraView;
+		var prevProj = @:privateAccess ctx.cameraProj;
 		var prevViewProj = @:privateAccess ctx.cameraViewProj;
-		@:privateAccess ctx.cameraViewProj = getShadowProj();
+		@:privateAccess ctx.cameraView = getShadowView();
+		@:privateAccess ctx.cameraProj = getShadowProj();
+		@:privateAccess ctx.cameraViewProj = getShadowViewProj();
 		@:privateAccess ctx.cameraFar = lightCamera.zFar;
 		@:privateAccess ctx.cameraPos = lightCamera.pos;
 
@@ -150,6 +150,8 @@ class SpotShadowMap extends Shadows {
 		}
 		@:privateAccess ctx.cameraFar = prevFar;
 		@:privateAccess ctx.cameraPos = prevPos;
+		@:privateAccess ctx.cameraView = prevView;
+		@:privateAccess ctx.cameraProj = prevProj;
 		@:privateAccess ctx.cameraViewProj = prevViewProj;
 
 		syncShader(texture);

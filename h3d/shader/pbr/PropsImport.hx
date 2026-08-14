@@ -15,6 +15,12 @@ class PropsImport extends hxsl.Shader {
 		@param var cameraInverseViewProj : Mat4;
 		@param var occlusionPower : Float;
 
+		@const var FAST_SRGB : Bool = true;
+		@:import h3d.shader.ColorSpaces;
+
+		@const var ENABLE_TRANSLUCENCY : Bool;
+		@param var translucencyTex : Sampler2D;
+
 		var albedo : Vec3;
 		var depth : Float;
 		var normal : Vec3;
@@ -24,6 +30,7 @@ class PropsImport extends hxsl.Shader {
 		var emissive : Float;
 		var custom1 : Float;
 		var custom2 : Float;
+		var translucency : Vec3;
 		var calculatedUV : Vec2;
 		var transformedPosition : Vec3;
 		var pbrSpecularColor : Vec3;
@@ -32,7 +39,10 @@ class PropsImport extends hxsl.Shader {
 		function fragment() {
 			var uv = isScreen ? calculatedUV : screenUV;
 			albedo = albedoTex.get(uv).rgb;
-			albedo *= albedo; // gamma correct
+			if ( FAST_SRGB )
+				albedo *= albedo;
+			else
+				albedo = srgb2linear(albedo);
 
 			normal = normalTex.get(uv).xyz;
 			#if MRT_low
@@ -55,7 +65,10 @@ class PropsImport extends hxsl.Shader {
 			custom1 = 0.0;
 			custom2 = 0.0;
 			#end
-			
+
+			if ( ENABLE_TRANSLUCENCY )
+				translucency = translucencyTex.get(uv).rgb;
+
 			depth = depthTex.get(uv).r;
 
 			pbrSpecularColor = mix(vec3(0.04),albedo,metalness);
