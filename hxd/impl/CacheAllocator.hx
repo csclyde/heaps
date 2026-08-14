@@ -178,10 +178,6 @@ private class Cache<T:h3d.Buffer> {
 
 class CacheAllocator extends Allocator {
 
-	public function new() {
-		super();
-	}
-
 	public var currentFrame = -1;
 	var buffers:Cache<h3d.Buffer>;
 	var indexBuffers:Cache<h3d.Indexes>;
